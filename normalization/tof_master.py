@@ -34,9 +34,6 @@ from sklearn.mixture import GaussianMixture
 
 from tqdm import tqdm
 
-from normalization.ComputeVED import ComputeVED
-
-from normalization import ArterialEnum
 
 
 def register_template(

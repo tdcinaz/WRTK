@@ -9,7 +9,7 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
-from normalization.tof_master import (
+from tof_master import (
     centerline_transform,
     create_willis_cube,
     find_willis_center,
@@ -42,6 +42,9 @@ def full_pipeline(
         labels_path (str): Path to labels nifti file to use instead of computing one,
         vessels_path (str): Path leading to vessels binary image instead of computing one,
     """
+
+    input_folder = args.input_folder
+    
 
     resolution_nn = (0.625, 0.625, 0.625)
     nn_resolution_path = join(args.output, "nn_space")
@@ -89,7 +92,7 @@ def full_pipeline(
         nn_resolution_path, f"{prefix}_SS_RegistrationImage.nii.gz"
     )
     
-    brain_extract(resample_file, mask_file, brain_mask_file, "MRI")         # Skull strip
+    brain_extract(resample_file, mask_file, brain_mask_file, "auto")         # Skull strip
 
     logging.info("   2.2 ++++ : Finding Circle of Willis masking cube")
 
