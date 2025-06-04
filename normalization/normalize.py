@@ -122,6 +122,4 @@ def full_pipeline(
     #    out_moving_aligned      = "output/topcow_ct_001_0000/nn_space/topcow_001_CT_inMRspace.nii.gz",
     #    out_moving_mask_aligned = "output/topcow_ct_001_0000/nn_space/topcow_001_CTmask_inMRspace.nii.gz",
     #    transform_prefix = "topcow-001_CT2MR_"
-    #)
-
-    # test
+    #
