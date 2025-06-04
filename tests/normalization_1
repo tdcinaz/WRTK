@@ -1,2 +1,2 @@
 #!/usr/bin/env python3
-normalization/preprocess.py tests/input/topcow/ 007 tests/output/topcow_007  -t normalization/MNI -f
+python3 normalization/preprocess.py tests/input/topcow/ 007 tests/output/topcow_007  -t normalization/MNI -f -sk

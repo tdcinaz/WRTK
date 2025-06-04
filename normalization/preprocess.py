@@ -74,6 +74,11 @@ def parse_arguments() -> argparse.Namespace:
         help="If flagged progress is reported, use -vv for more information.",
         action="count",
     )
+    parser.add_argument(
+        "-sk",
+        "--skip",
+        action="store_true",
+    )
     args = parser.parse_args()
 
     return args
