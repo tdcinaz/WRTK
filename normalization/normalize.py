@@ -193,6 +193,6 @@ def full_pipeline(
         moving_mask = mr_cropped_seg_file,
         out_moving_aligned      = mr_aligned_file,
         out_moving_mask_aligned = mr_aligned_seg_file,
-        transform_prefix = f"{prefix}_mr_aligned_"
+        transform_prefix = join(nn_resolution_path, f"{prefix}_transform_")
     )
     
