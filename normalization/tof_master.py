@@ -184,15 +184,12 @@ def coregister_ct_mr(
     reg_res = reg.run()                                              # 🚀 run ANTs
     fwd_xforms = reg_res.outputs.composite_transform                 # ordered for antsApplyTransforms
 
-    # ---------------- 2. resample the CT brain mask with the same xforms ----
-    at = ApplyTransforms()
-    at.inputs.dimension        = 3
-    at.inputs.reference_image  = fixed_img
-    at.inputs.input_image      = moving_mask
-    at.inputs.transforms       = fwd_xforms
-    at.inputs.interpolation    = 'NearestNeighbor'
-    at.inputs.output_image     = str(out_moving_mask_aligned)
-    at.run()
+    apply_transform(
+        moving_mask,
+        fixed_mask,
+        fwd_xforms,
+        str(out_moving_mask_aligned),
+    )
 
     return str(out_moving_aligned), fwd_xforms
 
