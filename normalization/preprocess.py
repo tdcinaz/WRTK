@@ -122,8 +122,9 @@ def main():
 
     prefix = args.prefix
     if prefix is None:
-        file_path = os.path.basename(args.TOF)
-        prefix = file_path.replace(".gz", "").replace(".nii", "")
+        prefix = "topcow"
+    #    file_path = os.path.basename(args.)
+    #    prefix = file_path.replace(".gz", "").replace(".nii", "")
 
 
     full_pipeline(args, prefix)
