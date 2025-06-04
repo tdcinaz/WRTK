@@ -27,11 +27,12 @@ def parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "TOF",
+        "input_folder",
         help="ToF MRA image [ 3D image | .nii/ .nii.gz ].",
     )
     parser.add_argument(
-        "SEG",
+        "patient_ID",
+        help="patient ID"
     )
     parser.add_argument(
         "output",
@@ -46,7 +47,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "-r",
         "--resolution",
-        help="Isotropic resampling resolution in mm (eg. [ Xmm Ymm Zmm ]).",
+        help="Isortopic resampling resolution in mm (eg. [ Xmm Ymm Zmm ]).",
         type=float,
         default=0.625,
     )
@@ -97,13 +98,11 @@ def main():
         logging.root.setLevel(logging.INFO if args.verbose == 1 else logging.DEBUG)
 
     logging.info("~ =============> Express CW <============= ~")
-    logging.info(f"TOF: {args.TOF}")
-    logging.info(f"SEG: {args.SEG}")
+    logging.info(f"Input folder: {args.input_folder}")
+    logging.info(f"Patient ID: {args.patient_ID}")
     logging.info(f"Output: {args.output}")
     logging.info(f"Overwrite: {args.overwrite}")
     logging.info(f"Resolution iso: {args.resolution}")
-    logging.info(f"Cube: {args.cube}")
-    logging.info(f"Mask: {args.mask}")
     logging.info(f"Attention: {args.attention}")
     logging.info(f"TemplatePath: {args.template_path}")
     logging.info(f"Prefix: {args.prefix}")

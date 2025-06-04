@@ -1,2 +1,2 @@
 #!/usr/bin/env python3
-preprocess.py input/topcow/imagesTr/topcow_mr_007_0001.nii.gz input/topcow/labelsTr/topcow_mr_007.nii.gz output/topcow_mr_007_0001 -t MNI -f
+normalization/preprocess.py tests/input/topcow/imagesTr/topcow_mr_007_0001.nii.gz tests/input/topcow/labelsTr/topcow_mr_007.nii.gz tests/output/topcow_mr_007_0001 -t normalization/MNI -f -s MRI
