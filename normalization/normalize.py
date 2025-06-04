@@ -32,9 +32,6 @@ from normalization.tof_master import (
 def full_pipeline(
     args: argparse.Namespace,
     prefix: str,
-    #option: int = 1,
-    #labels_path: str = None,
-    #vessels_path: str = None,
 ):
     """Compute the preprocessing, prediction, and metrics.
 
@@ -87,51 +84,30 @@ def full_pipeline(
     logging.info("2.  ===> Willis Labelling <===")
     logging.info("   2.1 ++++ : Creating a Brain Mask of NN Resolution")
 
-    if args.mask:
-        logging.info(f"    Used parse mask: {args.mask}")
-        mask_file = join(nn_resolution_path, f"{prefix}_mask.nii.gz")
-        nii_attributes_mask = resample(
-            args.mask, mask_file, master=resample_file, resample_mode="NN"
-        )
-        mask_array = nib.as_closest_canonical(nii_attributes_mask).get_fdata()
-        brain_mask_array = mask_array * resampled_array
-        brain_mask_file = join(nn_resolution_path, f"{prefix}_SS_Input.nii.gz")
-        nib.Nifti1Image(
-            brain_mask_array, nii_attributes.affine, nii_attributes.header
-        ).to_filename(brain_mask_file)
-        nib.Nifti1Image(
-            mask_array, nii_attributes.affine, nii_attributes.header
-        ).to_filename(mask_file)
-    else:
-        mask_file = join(nn_resolution_path, f"{prefix}_mask.nii.gz")
-        brain_mask_file = join(
-            nn_resolution_path, f"{prefix}_SS_RegistrationImage.nii.gz"
-        )
-        #mask_image(resample_file, mask_file, brain_mask_file)
-        brain_extract(resample_file, mask_file, brain_mask_file, "MRI")
-        
-
+    mask_file = join(nn_resolution_path, f"{prefix}_mask.nii.gz")
+    brain_mask_file = join(
+        nn_resolution_path, f"{prefix}_SS_RegistrationImage.nii.gz"
+    )
+    
+    brain_extract(resample_file, mask_file, brain_mask_file, "MRI")         # Skull strip
 
     logging.info("   2.2 ++++ : Finding Circle of Willis masking cube")
 
     cube_file = join(nn_resolution_path, f"{prefix}_cube.nii.gz")
-    if args.cube is None:
-        sphere, cube = create_willis_cube(
-            brain_mask_file,
-            nn_resolution_path,
-            template_path,
-            template_sphere_path,
-        )
-        nib.Nifti1Image(
-            sphere, nii_attributes.affine, nii_attributes.header
-        ).to_filename(join(nn_resolution_path, f"{prefix}_sphere.nii.gz"))
-        nib.Nifti1Image(cube, nii_attributes.affine, nii_attributes.header).to_filename(
-            cube_file
-        )
-    else:
-        cube = resample(
-            args.cube, cube_file, master=resample_file, resample_mode="NN"
-        ).get_fdata("unchanged")
+
+    sphere, cube = create_willis_cube(
+        brain_mask_file,
+        nn_resolution_path,
+        template_path,
+        template_sphere_path,
+    )
+    nib.Nifti1Image(
+        sphere, nii_attributes.affine, nii_attributes.header
+    ).to_filename(join(nn_resolution_path, f"{prefix}_sphere.nii.gz"))
+    nib.Nifti1Image(cube, nii_attributes.affine, nii_attributes.header).to_filename(
+        cube_file
+    )
+
 
     logging.info("   2.3 ++++ : Cropping and re-anchoring scan data")
     cropped_file = join(nn_resolution_path, f"{prefix}_cropped.nii.gz")

@@ -198,6 +198,7 @@ def coregister_ct_mr(
 
     return out_moving_aligned, fwd_xforms
 
+
 def apply_transform(
     template_file: str,
     fixed_file: str,
@@ -434,6 +435,7 @@ def crop_to_roi_cube(
     if return_bbox:
         return (imin, imax, jmin, jmax, kmin, kmax), new_affine
 
+
 def resample(
     in_file: str,
     out_file: str,
@@ -493,6 +495,7 @@ def autobox_image(in_file: str, out_file: str, pad: int = 6):
     abox.inputs.args = "-overwrite"
     abox.run()
     return nib.load(out_file)
+
 
 def crop_mask_like(mask_file: str, master_file: str, out_file: str):
     """
