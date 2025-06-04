@@ -186,11 +186,26 @@ def full_pipeline(
     mr_aligned_file = join(nn_resolution_path, f"{prefix}_mr_aligned.nii.gz")
     mr_aligned_seg_file = join(nn_resolution_path, f"{prefix}_mr_aligned_seg.nii.gz")
 
+    ct_binary_mask_file = join(nn_resolution_path, f"{prefix}_ct_binary_mask.nii.gz")
+    mr_binary_mask_file = join(nn_resolution_path, f"{prefix}_mr_binary_mask.nii.gz")
+
+    ct_mask = nib.load(ct_cropped_seg_file)
+    mr_mask = nib.load(mr_cropped_seg_file)
+
+    ct_mask_label_data = ct_mask.get_fdata(dtype=np.float32)
+    mr_mask_label_data = mr_mask.get_fdata(dtype=np.float32)
+
+    ct_mask_binary_data = (ct_mask_label_data != 0).astype(np.uint8)
+    mr_mask_binary_data = (mr_mask_label_data != 0).astype(np.uint8)
+
+    nib.Nifti1Image(ct_mask_binary_data, ct_mask.affine, ct_mask.header).to_filename(ct_binary_mask_file)
+    nib.Nifti1Image(mr_mask_binary_data, mr_mask.affine, mr_mask.header).to_filename(mr_binary_mask_file)
+
     aligned_mr, transforms = coregister_ct_mr(
         fixed_img   = ct_cropped_file,
         moving_img  = mr_cropped_file,
-        fixed_mask  = ct_cropped_seg_file,
-        moving_mask = mr_cropped_seg_file,
+        fixed_mask  = ct_binary_mask_file,
+        moving_mask = mr_binary_mask_file,
         out_moving_aligned      = mr_aligned_file,
         out_moving_mask_aligned = mr_aligned_seg_file,
         transform_prefix = join(nn_resolution_path, f"{prefix}_transform_")
