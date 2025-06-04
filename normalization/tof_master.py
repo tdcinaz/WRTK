@@ -131,13 +131,14 @@ def register_template(
 from typing import List
 
 def coregister_ct_mr(
-        fixed_img:   str,      # e.g. MR brain volume
-        moving_img:  str,      # e.g. CT brain volume
-        fixed_mask:  str,      # MR brain mask  (binary)
+        fixed_img: str,      # e.g. MR brain volume
+        moving_img: str,      # e.g. CT brain volume
+        fixed_mask: str,      # MR brain mask  (binary)
         moving_mask: str,      # CT brain mask  (binary)
         out_moving_aligned: str,
         out_moving_mask_aligned: str,
-        transform_prefix: str  = "CT2MR_",
+        transform_prefix: str = "CT2MR_",
+        n_threads: int = 6,
         use_syn: bool = True
     ) -> Tuple[str, List[str]]:
     """
@@ -145,15 +146,14 @@ def coregister_ct_mr(
     using brain masks as ROIs.  Returns path to the aligned CT image and the
     list of forward transforms in ANTs order.
     """
-    fixed_img   = fixed_img
-    moving_img  = moving_img
-    fixed_mask  = fixed_mask
-    moving_mask = moving_mask
-    transform_prefix = transform_prefix
+    fixed_img   = str(fixed_img)
+    moving_img  = str(moving_img)
+    fixed_mask  = str(fixed_mask)
+    moving_mask = str(moving_mask)
+    transform_prefix = str(transform_prefix)
 
     # ---------------- 1. build the ANTs registration object -----------------
     reg = Registration()
-    reg.inputs.verbose = True
     reg.inputs.fixed_image        = fixed_img
     reg.inputs.moving_image       = moving_img
     reg.inputs.fixed_image_masks  = [fixed_mask] * (3 if use_syn else 2)
@@ -173,14 +173,14 @@ def coregister_ct_mr(
     reg.inputs.smoothing_sigmas        = [[3, 2, 1, 0]]*2 + ([[1, .5, 0]] if use_syn else [])
 
     reg.inputs.write_composite_transform = True
-    reg.inputs.output_warped_image       = out_moving_aligned
+    reg.inputs.output_warped_image       = str(out_moving_aligned)
     reg.inputs.output_inverse_warped_image = False
     #reg.inputs.output_prefix             = transform_prefix
-    reg.inputs.num_threads               = multiprocessing.cpu_count()
+    reg.inputs.num_threads               = n_threads
     reg.inputs.float                     = True
     reg.inputs.args                      = "-u"        # avoid histogram‐match CSF/contrast swap
 
-    reg_res = reg.run()                                              # run ANTs
+    reg_res = reg.run()                                              # 🚀 run ANTs
     fwd_xforms = reg_res.outputs.forward_transforms                  # ordered for antsApplyTransforms
 
     # ---------------- 2. resample the CT brain mask with the same xforms ----
@@ -188,12 +188,12 @@ def coregister_ct_mr(
     at.inputs.dimension        = 3
     at.inputs.reference_image  = fixed_img
     at.inputs.input_image      = moving_mask
-    at.inputs.transforms       = "output/topcow_ct_001_0000/nn_space/Affine.mat"
+    at.inputs.transforms       = fwd_xforms
     at.inputs.interpolation    = 'NearestNeighbor'
-    at.inputs.output_image     = out_moving_mask_aligned
+    at.inputs.output_image     = str(out_moving_mask_aligned)
     at.run()
 
-    return out_moving_aligned, fwd_xforms
+    return str(out_moving_aligned), fwd_xforms
 
 
 def apply_transform(

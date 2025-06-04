@@ -166,8 +166,6 @@ def full_pipeline(
         mr_cube_file
     )
 
-
-
     logging.info("   2.3 ++++ : Cropping and re-anchoring scan data")
 
     ct_cropped_file = join(nn_resolution_path, f"{prefix}_ct_cropped.nii.gz")
@@ -178,12 +176,16 @@ def full_pipeline(
     mr_cropped_seg_file = join(nn_resolution_path, f"{prefix}_mr_cropped_seg.nii.gz")
     crop_to_roi_cube(mr_resample_file, mr_cube_file, mr_seg_resample_file, mr_cropped_file, mr_cropped_seg_file)
 
-    #aligned_ct, transforms = coregister_ct_mr(
-    #    fixed_img   = cropped_file,
-    #    moving_img  = "output/topcow_mr_001_0001/nn_space/topcow_mr_001_0001_cropped.nii.gz",
-    #    fixed_mask  = cropped_seg_file,
-    #    moving_mask = "output/topcow_mr_001_0001/nn_space/topcow_mr_001_0001_cropped_seg.nii.gz",
-    #    out_moving_aligned      = "output/topcow_ct_001_0000/nn_space/topcow_001_CT_inMRspace.nii.gz",
-    #    out_moving_mask_aligned = "output/topcow_ct_001_0000/nn_space/topcow_001_CTmask_inMRspace.nii.gz",
-    #    transform_prefix = "topcow-001_CT2MR_"
-    #
+    mr_aligned_file = join(nn_resolution_path, f"{prefix}_mr_aligned.nii.gz")
+    mr_aligned_seg_file = join(nn_resolution_path, f"{prefix}_mr_aligned_seg.nii.gz")
+
+    aligned_mr, transforms = coregister_ct_mr(
+        fixed_img   = ct_cropped_file,
+        moving_img  = mr_cropped_file,
+        fixed_mask  = ct_cropped_seg_file,
+        moving_mask = mr_cropped_seg_file,
+        out_moving_aligned      = mr_aligned_file,
+        out_moving_mask_aligned = mr_aligned_seg_file,
+        transform_prefix = f"{prefix}_mr_aligned_"
+    )
+    
