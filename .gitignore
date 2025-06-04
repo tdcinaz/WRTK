@@ -1,3 +1,4 @@
 tests/input/
 tests/output/
 normalization/__pycache__
+normalization/__pycache__/
