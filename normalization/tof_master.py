@@ -15,6 +15,9 @@ import nibabel as nib
 from nipype.interfaces import afni
 from nipype.interfaces.ants import ApplyTransforms, Registration
 import numpy as np
+import subprocess
+import pathlib
+
 
 from raster_geometry import cube
 
@@ -157,8 +160,8 @@ def coregister_ct_mr(
     reg.inputs.verbose            = True
     reg.inputs.fixed_image        = fixed_img
     reg.inputs.moving_image       = moving_img
-    reg.inputs.fixed_image_masks  = [fixed_mask] * (3 if use_syn else 2)
-    reg.inputs.moving_image_masks = [moving_mask] * (3 if use_syn else 2)
+    #reg.inputs.fixed_image_masks  = [fixed_mask] * (3 if use_syn else 2)
+    #reg.inputs.moving_image_masks = [moving_mask] * (3 if use_syn else 2)
 
     reg.inputs.transforms              = ['Rigid', 'Affine'] + (['SyN'] if use_syn else [])
     reg.inputs.transform_parameters    = [(0.1,), (0.1,)]     + ([(0.1, 3, 0)] if use_syn else [])
@@ -297,7 +300,6 @@ def mask_image(in_file: str, out_file: str, out_brain_masked: str) -> nib.Nifti1
     # Binary conversion of mask
     return nib.load(out_file)
 
-import subprocess, pathlib
 
 def brain_extract(in_file: str,
                   out_mask: str,
@@ -438,7 +440,7 @@ def resample(
     master: Optional[str] = None,
     resample_mode="Cu",
 ) -> nib.Nifti1Image:
-    """Resample volume using antsRegistation.
+    """Resample volume using afni.
 
     Args:
         in_file (str): Input file to register.

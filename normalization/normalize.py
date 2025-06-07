@@ -80,7 +80,7 @@ def full_pipeline(
         logging.info(f"Original CT orientation: {nib.aff2axcodes(ct_raw.affine)}")
         logging.info(f"Original MR orientation: {nib.aff2axcodes(mr_raw.affine)}")
 
-
+        # Extracts the voxel data from the raw nifti images and ensures consistant origin position and axis ordering
         ct = nib.as_closest_canonical(ct_raw)
         mr = nib.as_closest_canonical(mr_raw)
         ct_seg = nib.as_closest_canonical(ct_seg_raw)
@@ -95,7 +95,7 @@ def full_pipeline(
         mr.to_filename(reorient_mr_file)
 
         seg_ct_reorient_file = join(original_path, f"{prefix}_seg_reorient_ct.nii.gz")
-        seg_mr_reorient_file = join(original_path, f"{prefix}_mr_reorient_ct.nii.gz")
+        seg_mr_reorient_file = join(original_path, f"{prefix}_seg_reorient_mr.nii.gz")
         ct_seg.to_filename(seg_ct_reorient_file)
         mr_seg.to_filename(seg_mr_reorient_file)
 
@@ -103,7 +103,7 @@ def full_pipeline(
         mr_autobox_file = join(original_path, f"{prefix}_autobox_mr.nii.gz")
         autobox_image(reorient_ct_file, ct_autobox_file, pad=6)
         autobox_image(reorient_mr_file, mr_autobox_file, pad=6)
-
+        
         ct_seg_autobox_file = join(original_path, f"{prefix}_seg_autobox_ct.nii.gz")
         mr_seg_autobox_file = join(original_path, f"{prefix}_seg_autobox_mr.nii.gz")
         crop_mask_like(seg_ct_reorient_file, ct_autobox_file, ct_seg_autobox_file)
@@ -119,8 +119,8 @@ def full_pipeline(
 
         ct_seg_resample_file = join(nn_resolution_path, f"{prefix}_ct_seg_resampled.nii.gz")
         mr_seg_resample_file = join(nn_resolution_path, f"{prefix}_mr_seg_resampled.nii.gz")
-        ct_seg_attributes = resample(ct_seg_autobox_file, ct_seg_resample_file, resolution=resolution_nn)
-        mr_seg_attributes = resample(mr_seg_autobox_file, mr_seg_resample_file, resolution=resolution_nn)
+        ct_seg_attributes = resample(ct_seg_autobox_file, ct_seg_resample_file, resolution=resolution_nn, resample_mode="NN")
+        mr_seg_attributes = resample(mr_seg_autobox_file, mr_seg_resample_file, resolution=resolution_nn, resample_mode="NN")
 
 
         logging.info("2.  ===> Willis Labelling <===")
@@ -186,26 +186,26 @@ def full_pipeline(
     mr_aligned_file = join(nn_resolution_path, f"{prefix}_mr_aligned.nii.gz")
     mr_aligned_seg_file = join(nn_resolution_path, f"{prefix}_mr_aligned_seg.nii.gz")
 
-    ct_binary_mask_file = join(nn_resolution_path, f"{prefix}_ct_binary_mask.nii.gz")
-    mr_binary_mask_file = join(nn_resolution_path, f"{prefix}_mr_binary_mask.nii.gz")
+    #ct_binary_mask_file = join(nn_resolution_path, f"{prefix}_ct_binary_mask.nii.gz")
+    #mr_binary_mask_file = join(nn_resolution_path, f"{prefix}_mr_binary_mask.nii.gz")
 
-    ct_mask = nib.load(ct_cropped_seg_file)
-    mr_mask = nib.load(mr_cropped_seg_file)
+    #ct_mask = nib.load(ct_cropped_seg_file)
+    #mr_mask = nib.load(mr_cropped_seg_file)
 
-    ct_mask_label_data = ct_mask.get_fdata(dtype=np.float32)
-    mr_mask_label_data = mr_mask.get_fdata(dtype=np.float32)
+    #ct_mask_label_data = ct_mask.get_fdata(dtype=np.float32)
+    #mr_mask_label_data = mr_mask.get_fdata(dtype=np.float32)
 
-    ct_mask_binary_data = (ct_mask_label_data != 0).astype(np.uint8)
-    mr_mask_binary_data = (mr_mask_label_data != 0).astype(np.uint8)
+    #ct_mask_binary_data = (ct_mask_label_data != 0).astype(np.uint8)
+    #mr_mask_binary_data = (mr_mask_label_data != 0).astype(np.uint8)
 
-    nib.Nifti1Image(ct_mask_binary_data, ct_mask.affine, ct_mask.header).to_filename(ct_binary_mask_file)
-    nib.Nifti1Image(mr_mask_binary_data, mr_mask.affine, mr_mask.header).to_filename(mr_binary_mask_file)
+    #nib.Nifti1Image(ct_mask_binary_data, ct_mask.affine, ct_mask.header).to_filename(ct_binary_mask_file)
+    #nib.Nifti1Image(mr_mask_binary_data, mr_mask.affine, mr_mask.header).to_filename(mr_binary_mask_file)
 
     aligned_mr, transforms = coregister_ct_mr(
         fixed_img   = ct_cropped_file,
         moving_img  = mr_cropped_file,
-        fixed_mask  = ct_binary_mask_file,
-        moving_mask = mr_binary_mask_file,
+        fixed_mask  = ct_cropped_seg_file,
+        moving_mask = mr_cropped_seg_file,
         out_moving_aligned      = mr_aligned_file,
         out_moving_mask_aligned = mr_aligned_seg_file,
         transform_prefix = join(nn_resolution_path, f"{prefix}_transform_")
