@@ -13,7 +13,6 @@ import pathlib
 from raster_geometry import cube
 from scipy.ndimage import center_of_mass
 from typing import List
-import torch
 
 def register_template(
     fixed_file: str,
