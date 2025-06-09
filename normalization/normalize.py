@@ -169,15 +169,17 @@ def full_pipeline(
         logging.info("   6.1 ++++ : Cropping an re-anchoring CT")
         ct_cropped_file = join(nn_resolution_path, f"{prefix}_ct_cropped_{patient_ID}.nii.gz")
         ct_cropped_seg_file = join(nn_resolution_path, f"{prefix}_ct_cropped_seg_{patient_ID}.nii.gz")
-        crop_to_roi_cube(ct_resample_file, ct_cube_file, ct_seg_resample_file, ct_cropped_file, ct_cropped_seg_file)
+        ct_bbox, _ = crop_to_roi_cube(ct_resample_file, ct_cube_file, ct_seg_resample_file, ct_cropped_file, ct_cropped_seg_file, return_bbox=True)
 
         logging.info("   6.2 ++++ : Cropping an re-anchoring MR")
         mr_cropped_file = join(nn_resolution_path, f"{prefix}_mr_cropped_{patient_ID}.nii.gz")
         mr_cropped_seg_file = join(nn_resolution_path, f"{prefix}_mr_cropped_seg_{patient_ID}.nii.gz")
         mr_bbox, _ = crop_to_roi_cube(mr_resample_file, mr_cube_file, mr_seg_resample_file, mr_cropped_file, mr_cropped_seg_file, return_bbox=True)
 
+        ct_bbox_file = join(nn_resolution_path, f"{prefix}_ct_bbox.npy")
         mr_bbox_file = join(nn_resolution_path, f"{prefix}_mr_bbox_{patient_ID}.npy")
         np.save(mr_bbox_file, mr_bbox)
+        np.save(ct_bbox_file, ct_bbox)
 
     else:
         ct_cropped_file = join(nn_resolution_path, f"{prefix}_ct_cropped_{patient_ID}.nii.gz")
@@ -186,16 +188,17 @@ def full_pipeline(
         mr_bbox_file = join(nn_resolution_path, f"{prefix}_mr_bbox_{patient_ID}.npy")
         mr_bbox = np.load(mr_bbox_file)
 
-    mr_aligned_file = join(nn_resolution_path, f"{prefix}_mr_aligned_{patient_ID}.nii.gz")
-    mr_aligned_seg_file = join(nn_resolution_path, f"{prefix}_mr_aligned_seg_{patient_ID}.nii.gz")
+    mr_aligned_file = join(nn_resolution_path, f"{prefix}_mr_aligned.nii.gz")
+    mr_aligned_seg_file = join(nn_resolution_path, f"{prefix}_mr_aligned_seg.nii.gz")
 
-    imin, imax, jmin, jmax, kmin, kmax = mr_bbox
+    ct_imin, ct_imax, ct_jmin, ct_jmax, ct_kmin, ct_kmax = ct_bbox
+    mr_imin, mr_imax, mr_jmin, mr_jmax, mr_kmin, mr_kmax = mr_bbox
 
     if (skip == False):
 
-        logging.info("7. ===> Registering MR to CT <===")
+        logging.info("7. ===> Coregistering CT and MR <===")
 
-        _, transforms = coregister_ct_mr(
+        _, transforms, inv_transforms = coregister_ct_mr(
             fixed_img   = ct_cropped_file,
             moving_img  = mr_cropped_file,
             fixed_mask  = ct_cropped_seg_file,
@@ -205,40 +208,78 @@ def full_pipeline(
             transform_prefix = join(nn_resolution_path, f"{prefix}_transform_")
         )
     else:
-        transforms = join(nn_resolution_path, f"{prefix}_transform_Composite_{patient_ID}.h5")
+        transforms = join(nn_resolution_path, f"{prefix}_transform_Composite.h5")
+        inv_transforms = join(nn_resolution_path, f"{prefix}_transform_InverseComposite.h5")
 
     # ----------------------------------------------------------
     # 2. build a new affine for the *whole* MR volume
     #    so that voxel (imin,jmin,kmin) becomes the new origin
     # ----------------------------------------------------------
+    ct_full: nib.Nifti1Image = nib.load(ct_resample_file)
+    ct_full_seg: nib.Nifti1Image = nib.load(ct_seg_resample_file)
     mr_full: nib.Nifti1Image = nib.load(mr_resample_file)
     mr_full_seg: nib.Nifti1Image = nib.load(mr_seg_resample_file)
+
     voxsize = mr_full.header.get_zooms()[:3]
 
-    new_affine = mr_full.affine.copy()
-    new_affine_seg = mr_full_seg.affine.copy()
+    ct_new_affine = ct_full.affine.copy()
+    ct_new_affine_seg = ct_full_seg.affine.copy()
+    mr_new_affine = mr_full.affine.copy()
+    mr_new_affine_seg = mr_full_seg.affine.copy()
 
-    new_affine[:3, 3]   = -np.array([imin*voxsize[0], jmin*voxsize[1], kmin*voxsize[2]])
-    new_affine_seg[:3, 3]   = -np.array([imin*voxsize[0], jmin*voxsize[1], kmin*voxsize[2]])
 
+    ct_new_affine[:3, 3]   = -np.array([ct_imin*voxsize[0], ct_jmin*voxsize[1], ct_kmin*voxsize[2]])
+    ct_new_affine_seg[:3, 3]   = -np.array([ct_imin*voxsize[0], ct_jmin*voxsize[1], ct_kmin*voxsize[2]])
+    mr_new_affine[:3, 3]   = -np.array([mr_imin*voxsize[0], mr_jmin*voxsize[1], mr_kmin*voxsize[2]])
+    mr_new_affine_seg[:3, 3]   = -np.array([mr_imin*voxsize[0], mr_jmin*voxsize[1], mr_kmin*voxsize[2]])
+
+    ct_full_data = ct_full.get_fdata(dtype=np.float32, caching="unchanged")
+    ct_full_seg_data = ct_full_seg.get_fdata(dtype=np.float32, caching="unchanged").astype(np.uint8)
     mr_full_data = mr_full.get_fdata(dtype=np.float32, caching="unchanged")
     mr_full_seg_data = mr_full_seg.get_fdata(dtype=np.float32, caching="unchanged").astype(np.uint8)
 
-    mr_hdr_seg = mr_full_seg.header.copy()
+    ct_hdr_seg: nib.Nifti1Header = ct_full_seg.header.copy()
+    ct_hdr_seg.set_data_dtype(np.uint8)
+    mr_hdr_seg: nib.Nifti1Header = mr_full_seg.header.copy()
     mr_hdr_seg.set_data_dtype(np.uint8)
 
-    mr_reanchored_file = join(nn_resolution_path, f"{prefix}_mr_reanchored_{patient_ID}.nii.gz")
-    mr_reanchored_seg_file = join(nn_resolution_path, f"{prefix}_mr_reanchored_seg_{patient_ID}.nii.gz")
-    nib.Nifti1Image(mr_full_data, new_affine, mr_full.header).to_filename(mr_reanchored_file)
-    nib.Nifti1Image(mr_full_seg_data, new_affine, mr_hdr_seg).to_filename(mr_reanchored_seg_file)
+    ct_reanchored_file = join(nn_resolution_path, f"{prefix}_ct_reanchored.nii.gz")
+    ct_reanchored_seg_file = join(nn_resolution_path, f"{prefix}_ct_reanchored_seg.nii.gz")
+    nib.Nifti1Image(ct_full_data, ct_new_affine, ct_full.header).to_filename(ct_reanchored_file)
+    nib.Nifti1Image(ct_full_seg_data, ct_new_affine, ct_hdr_seg).to_filename(ct_reanchored_seg_file)
+    mr_reanchored_file = join(nn_resolution_path, f"{prefix}_mr_reanchored.nii.gz")
+    mr_reanchored_seg_file = join(nn_resolution_path, f"{prefix}_mr_reanchored_seg.nii.gz")
+    nib.Nifti1Image(mr_full_data, mr_new_affine, mr_full.header).to_filename(mr_reanchored_file)
+    nib.Nifti1Image(mr_full_seg_data, mr_new_affine, mr_hdr_seg).to_filename(mr_reanchored_seg_file)
 
-    aligned_mr_cube      = join(nn_resolution_path, f"{prefix}_mr_aligned_cube_{patient_ID}.nii.gz")
-    aligned_mr_seg_cube  = join(nn_resolution_path, f"{prefix}_mr_aligned_seg_cube_{patient_ID}.nii.gz")
+    aligned_ct_cube      = join(nn_resolution_path, f"{prefix}_ct_aligned_cube.nii.gz")
+    aligned_ct_seg_cube  = join(nn_resolution_path, f"{prefix}_ct_aligned_seg_cube.nii.gz")
+    aligned_mr_cube      = join(nn_resolution_path, f"{prefix}_mr_aligned_cube.nii.gz")
+    aligned_mr_seg_cube  = join(nn_resolution_path, f"{prefix}_mr_aligned_seg_cube.nii.gz")
 
-    logging.info("8. ===> Applying Computed Transform to MR <===")
+    logging.info("8. ===> Applying Computed Transform <===")
 
-    # 1.  Warp the *uncropped* MR scan into CT-cube space
-    logging.info("   8.1 ++++ : Applying Transform to MR Scan")
+    # 1.  Warp the *uncropped* CT scan into MR-cube space
+    logging.info("   8.1 ++++ : Applying Transform to CT Scan")
+    apply_transform(
+        template_file   = ct_reanchored_file,   # ← full CT (still cube-shaped, but un-warped)
+        fixed_file      = mr_cropped_file,    # ← reference = MR cube (already cropped!)
+        transform       = inv_transforms,         # ← path returned by coregister_ct_mr
+        output          = aligned_ct_cube,
+        interpolation   = "Linear",           # or "BSpline"
+    )
+
+    # 2.  Warp the *uncropped* CT segmentation mask the same way
+    logging.info("   8.2 ++++ : Applying Transform to CT Segmentation Mask")
+    apply_transform(
+        template_file   = ct_reanchored_seg_file,
+        fixed_file      = mr_cropped_file,
+        transform       = inv_transforms,
+        output          = aligned_ct_seg_cube,
+        interpolation   = "MultiLabel",
+    )
+    # 3.  Warp the *uncropped* MR scan into CT-cube space
+    logging.info("   8.3 ++++ : Applying Transform to MR Scan")
     apply_transform(
         template_file   = mr_reanchored_file,   # ← full MR (still cube-shaped, but un-warped)
         fixed_file      = ct_cropped_file,    # ← reference = CT cube (already cropped!)
@@ -247,8 +288,8 @@ def full_pipeline(
         interpolation   = "Linear",           # or "BSpline"
     )
 
-    # 2.  Warp the *uncropped* MR segmentation mask the same way
-    logging.info("   8.2 ++++ : Applying Transform to MR Segmentation Mask")
+    # 4.  Warp the *uncropped* MR segmentation mask the same way
+    logging.info("   8.4 ++++ : Applying Transform to MR Segmentation Mask")
     apply_transform(
         template_file   = mr_reanchored_seg_file,
         fixed_file      = ct_cropped_file,
