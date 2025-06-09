@@ -142,7 +142,7 @@ def main():
     #batch mode
     if args.batch_mode:
         #creates a directory called all scans, initially is empty
-        all_scans = join(args.output, "all_scans")
+        all_scans = "tests/output/all_scans"
         os.makedirs(all_scans, exist_ok=True)
         args.patient_ID = "001"
         
@@ -171,8 +171,8 @@ def main():
 
         for i in range(125):
             folder_name = "topcow" + patient_ID
-            ct_folder = join(args.output, all_scans, folder_name, "ct_mask")
-            mr_folder = join(args.output, all_scans, folder_name, "mr_mask")
+            ct_folder = join(all_scans, folder_name, "ct_mask")
+            mr_folder = join(all_scans, folder_name, "mr_mask")
 
 
             shutil.move(join(args.output, "nn_space", (f"topcow_ct_cropped_{patient_ID}.nii.gz")), ct_folder)

@@ -135,7 +135,7 @@ def full_pipeline(
         logging.info("   4.2 ++++ : Skull Stripping MR")
         mr_mask_file = join(nn_resolution_path, f"{prefix}_mr_mask_{patient_ID}.nii.gz")
         mr_brain_mask_file = join(nn_resolution_path, f"{prefix}_mr_SS_RegistrationImage_{patient_ID}.nii.gz")  
-        brain_extract(mr_resample_file, mr_mask_file, mr_brain_mask_file, "mri")
+        brain_extract(mr_resample_file, mr_mask_file, mr_brain_mask_file, "mri", use_gpu=True, use_hdbet=True)
 
 
         logging.info("5. ===> Finding Circle of Willis masking cube <===")
