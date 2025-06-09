@@ -278,7 +278,8 @@ def brain_extract(in_file: str,
                   out_mask: str,
                   out_brain: str,
                   modality: str = "auto",
-                  use_gpu = False
+                  use_gpu = False,
+                  use_hdbet = False,
                   ) -> nib.Nifti1Image:
     """
     Brain‑extracts MRI or CT angiography volumes using the best available tool.
@@ -303,14 +304,17 @@ def brain_extract(in_file: str,
 
     tool = None
     if modality.upper() == "MRI":
-        try:                               # fastest if available
-            #subprocess.run(["hd-bet", "-i", in_file, "-o", out_mask,
-            #                "-device", "cpu", "-mode", "fast"], check=True)
-            subprocess.run(["hd-bet", "-i", in_file, "-o", out_mask], check=True)
-            tool = "HD‑BET"
-            print("Skull stripped with HD-BET")
-        except FileNotFoundError:
-            print("HD‑BET not found, falling back to afni")
+        if use_hdbet:
+            try:                               # fastest if available
+                #subprocess.run(["hd-bet", "-i", in_file, "-o", out_mask,
+                #                "-device", "cpu", "-mode", "fast"], check=True)
+                subprocess.run(["hd-bet", "-i", in_file, "-o", out_mask, "-device"] + (["0"] if use_gpu else ["cpu"]), check=True)
+                tool = "HD‑BET"
+                print("Skull stripped with HD-BET")
+            except FileNotFoundError:
+                print("HD‑BET not found, falling back to afni")
+                tool = "afni"
+        else:
             tool = "afni"
     if modality.upper() == "CT":
         try:
