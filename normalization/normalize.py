@@ -176,7 +176,7 @@ def full_pipeline(
         mr_cropped_seg_file = join(nn_resolution_path, f"{prefix}_mr_cropped_seg_{patient_ID}.nii.gz")
         mr_bbox, _ = crop_to_roi_cube(mr_resample_file, mr_cube_file, mr_seg_resample_file, mr_cropped_file, mr_cropped_seg_file, return_bbox=True)
 
-        ct_bbox_file = join(nn_resolution_path, f"{prefix}_ct_bbox.npy")
+        ct_bbox_file = join(nn_resolution_path, f"{prefix}_ct_bbox_{patient_ID}.npy")
         mr_bbox_file = join(nn_resolution_path, f"{prefix}_mr_bbox_{patient_ID}.npy")
         np.save(mr_bbox_file, mr_bbox)
         np.save(ct_bbox_file, ct_bbox)
@@ -188,8 +188,8 @@ def full_pipeline(
         mr_bbox_file = join(nn_resolution_path, f"{prefix}_mr_bbox_{patient_ID}.npy")
         mr_bbox = np.load(mr_bbox_file)
 
-    mr_aligned_file = join(nn_resolution_path, f"{prefix}_mr_aligned.nii.gz")
-    mr_aligned_seg_file = join(nn_resolution_path, f"{prefix}_mr_aligned_seg.nii.gz")
+    mr_aligned_file = join(nn_resolution_path, f"{prefix}_mr_aligned_{patient_ID}.nii.gz")
+    mr_aligned_seg_file = join(nn_resolution_path, f"{prefix}_mr_aligned_seg_{patient_ID}.nii.gz")
 
     ct_imin, ct_imax, ct_jmin, ct_jmax, ct_kmin, ct_kmax = ct_bbox
     mr_imin, mr_imax, mr_jmin, mr_jmax, mr_kmin, mr_kmax = mr_bbox
@@ -205,11 +205,11 @@ def full_pipeline(
             moving_mask = mr_cropped_seg_file,
             out_moving_aligned      = mr_aligned_file,
             out_moving_mask_aligned = mr_aligned_seg_file,
-            transform_prefix = join(nn_resolution_path, f"{prefix}_transform_")
+            transform_prefix = join(nn_resolution_path, f"{prefix}_transform_{patient_ID}_")
         )
     else:
-        transforms = join(nn_resolution_path, f"{prefix}_transform_Composite.h5")
-        inv_transforms = join(nn_resolution_path, f"{prefix}_transform_InverseComposite.h5")
+        transforms = join(nn_resolution_path, f"{prefix}_transform_{patient_ID}_Composite.h5")
+        inv_transforms = join(nn_resolution_path, f"{prefix}_transform_{patient_ID}_InverseComposite.h5")
 
     # ----------------------------------------------------------
     # 2. build a new affine for the *whole* MR volume
@@ -243,19 +243,19 @@ def full_pipeline(
     mr_hdr_seg: nib.Nifti1Header = mr_full_seg.header.copy()
     mr_hdr_seg.set_data_dtype(np.uint8)
 
-    ct_reanchored_file = join(nn_resolution_path, f"{prefix}_ct_reanchored.nii.gz")
-    ct_reanchored_seg_file = join(nn_resolution_path, f"{prefix}_ct_reanchored_seg.nii.gz")
+    ct_reanchored_file = join(nn_resolution_path, f"{prefix}_ct_reanchored_{patient_ID}.nii.gz")
+    ct_reanchored_seg_file = join(nn_resolution_path, f"{prefix}_ct_reanchored_seg_{patient_ID}.nii.gz")
     nib.Nifti1Image(ct_full_data, ct_new_affine, ct_full.header).to_filename(ct_reanchored_file)
     nib.Nifti1Image(ct_full_seg_data, ct_new_affine, ct_hdr_seg).to_filename(ct_reanchored_seg_file)
-    mr_reanchored_file = join(nn_resolution_path, f"{prefix}_mr_reanchored.nii.gz")
-    mr_reanchored_seg_file = join(nn_resolution_path, f"{prefix}_mr_reanchored_seg.nii.gz")
+    mr_reanchored_file = join(nn_resolution_path, f"{prefix}_mr_reanchored_{patient_ID}.nii.gz")
+    mr_reanchored_seg_file = join(nn_resolution_path, f"{prefix}_mr_reanchored_seg_{patient_ID}.nii.gz")
     nib.Nifti1Image(mr_full_data, mr_new_affine, mr_full.header).to_filename(mr_reanchored_file)
     nib.Nifti1Image(mr_full_seg_data, mr_new_affine, mr_hdr_seg).to_filename(mr_reanchored_seg_file)
 
-    aligned_ct_cube      = join(nn_resolution_path, f"{prefix}_ct_aligned_cube.nii.gz")
-    aligned_ct_seg_cube  = join(nn_resolution_path, f"{prefix}_ct_aligned_seg_cube.nii.gz")
-    aligned_mr_cube      = join(nn_resolution_path, f"{prefix}_mr_aligned_cube.nii.gz")
-    aligned_mr_seg_cube  = join(nn_resolution_path, f"{prefix}_mr_aligned_seg_cube.nii.gz")
+    aligned_ct_cube      = join(nn_resolution_path, f"{prefix}_ct_aligned_cube_{patient_ID}.nii.gz")
+    aligned_ct_seg_cube  = join(nn_resolution_path, f"{prefix}_ct_aligned_seg_cube_{patient_ID}.nii.gz")
+    aligned_mr_cube      = join(nn_resolution_path, f"{prefix}_mr_aligned_cube_{patient_ID}.nii.gz")
+    aligned_mr_seg_cube  = join(nn_resolution_path, f"{prefix}_mr_aligned_seg_cube_{patient_ID}.nii.gz")
 
     logging.info("8. ===> Applying Computed Transform <===")
 
