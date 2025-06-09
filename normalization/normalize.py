@@ -46,6 +46,7 @@ def full_pipeline(
     template_path = join(args.template_path, f"AVG_TOF_MNI_SS_down.nii.gz")
     template_sphere_path = join(args.template_path, f"willis_sphere_down.nii.gz")
 
+
     if (skip == False):
         for scan in scans:
             if patient_ID in scan[0:13]:
@@ -71,9 +72,9 @@ def full_pipeline(
         ct = nib.as_closest_canonical(ct_raw)
         ct_seg = nib.as_closest_canonical(ct_seg_raw)
         logging.info(f"      1.1.2 ++++ : Transformed CT orientation: {nib.aff2axcodes(ct.affine)}")
-        reorient_ct_file = join(original_path, f"{prefix}_reorient_ct.nii.gz")
+        reorient_ct_file = join(original_path, f"{prefix}_reorient_ct_{patient_ID}.nii.gz")
         ct.to_filename(reorient_ct_file)
-        seg_ct_reorient_file = join(original_path, f"{prefix}_seg_reorient_ct.nii.gz")
+        seg_ct_reorient_file = join(original_path, f"{prefix}_seg_reorient_ct_{patient_ID}.nii.gz")
         ct_seg.to_filename(seg_ct_reorient_file)
 
         logging.info("   1.2 ++++ : Aligning MR Scan")
@@ -83,57 +84,57 @@ def full_pipeline(
         mr = nib.as_closest_canonical(mr_raw)
         mr_seg = nib.as_closest_canonical(mr_seg_raw)
         logging.info(f"      1.2.2 ++++ : Transformed CT orientation: {nib.aff2axcodes(mr.affine)}")
-        reorient_mr_file = join(original_path, f"{prefix}_reorient_mr.nii.gz")
+        reorient_mr_file = join(original_path, f"{prefix}_reorient_mr_{patient_ID}.nii.gz")
         mr.to_filename(reorient_mr_file)
-        seg_mr_reorient_file = join(original_path, f"{prefix}_seg_reorient_mr.nii.gz")
+        seg_mr_reorient_file = join(original_path, f"{prefix}_seg_reorient_mr_{patient_ID}.nii.gz")
         mr_seg.to_filename(seg_mr_reorient_file)
 
 
         logging.info("2. ===> Computing Bounding Boxes <===")
 
         logging.info("   2.1 ++++ : Autoboxing CT Scan")
-        ct_autobox_file = join(original_path, f"{prefix}_autobox_ct.nii.gz")
+        ct_autobox_file = join(original_path, f"{prefix}_autobox_ct_{patient_ID}.nii.gz")
         autobox_image(reorient_ct_file, ct_autobox_file, pad=6)
-        ct_seg_autobox_file = join(original_path, f"{prefix}_seg_autobox_ct.nii.gz")
+        ct_seg_autobox_file = join(original_path, f"{prefix}_seg_autobox_ct_{patient_ID}.nii.gz")
         crop_mask_like(seg_ct_reorient_file, ct_autobox_file, ct_seg_autobox_file)
 
 
         logging.info("   2.2 ++++ : Autoboxing MR Scan")
-        mr_autobox_file = join(original_path, f"{prefix}_autobox_mr.nii.gz")
+        mr_autobox_file = join(original_path, f"{prefix}_autobox_mr_{patient_ID}.nii.gz")
         autobox_image(reorient_mr_file, mr_autobox_file, pad=6)
-        mr_seg_autobox_file = join(original_path, f"{prefix}_seg_autobox_mr.nii.gz")
+        mr_seg_autobox_file = join(original_path, f"{prefix}_seg_autobox_mr_{patient_ID}.nii.gz")
         crop_mask_like(seg_mr_reorient_file, mr_autobox_file, mr_seg_autobox_file)
 
 
         logging.info("3. ===> Resampling to Neural Network Resolution <===")
 
         logging.info("   3.1 ++++ : Resampling CT Scan")
-        ct_resample_file = join(nn_resolution_path, f"{prefix}_ct_resampled.nii.gz")
+        ct_resample_file = join(nn_resolution_path, f"{prefix}_ct_resampled_{patient_ID}.nii.gz")
         ct_nii_attributes = resample(ct_autobox_file, ct_resample_file, resolution=resolution_nn)
 
         logging.info("   3.2 ++++ : Resampling MR Scan")
-        mr_resample_file = join(nn_resolution_path, f"{prefix}_mr_resampled.nii.gz")
+        mr_resample_file = join(nn_resolution_path, f"{prefix}_mr_resampled_{patient_ID}.nii.gz")
         mr_nii_attributes = resample(mr_autobox_file, mr_resample_file, resolution=resolution_nn)
 
         logging.info("   3.3 ++++ : Resampling CT Segmentation Mask")
-        ct_seg_resample_file = join(nn_resolution_path, f"{prefix}_ct_seg_resampled.nii.gz")
+        ct_seg_resample_file = join(nn_resolution_path, f"{prefix}_ct_seg_resampled_{patient_ID}.nii.gz")
         resample(ct_seg_autobox_file, ct_seg_resample_file, resolution=resolution_nn, resample_mode="NN")
 
         logging.info("   3.4 ++++ : Resampling MR Segmentation Mask")
-        mr_seg_resample_file = join(nn_resolution_path, f"{prefix}_mr_seg_resampled.nii.gz")
+        mr_seg_resample_file = join(nn_resolution_path, f"{prefix}_mr_seg_resampled_{patient_ID}.nii.gz")
         resample(mr_seg_autobox_file, mr_seg_resample_file, resolution=resolution_nn, resample_mode="NN")
 
 
         logging.info("4. ===> Creating a Brain Mask of NN Resolution <===")
 
         logging.info("   4.1 ++++ : Skull Stripping CT")
-        ct_mask_file = join(nn_resolution_path, f"{prefix}_ct_mask.nii.gz")
-        ct_brain_mask_file = join(nn_resolution_path, f"{prefix}_ct_SS_RegistrationImage.nii.gz")
+        ct_mask_file = join(nn_resolution_path, f"{prefix}_ct_mask_{patient_ID}.nii.gz")
+        ct_brain_mask_file = join(nn_resolution_path, f"{prefix}_ct_SS_RegistrationImage_{patient_ID}.nii.gz")
         brain_extract(ct_resample_file, ct_mask_file, ct_brain_mask_file, "ct")
 
         logging.info("   4.2 ++++ : Skull Stripping MR")
-        mr_mask_file = join(nn_resolution_path, f"{prefix}_mr_mask.nii.gz")
-        mr_brain_mask_file = join(nn_resolution_path, f"{prefix}_mr_SS_RegistrationImage.nii.gz")  
+        mr_mask_file = join(nn_resolution_path, f"{prefix}_mr_mask_{patient_ID}.nii.gz")
+        mr_brain_mask_file = join(nn_resolution_path, f"{prefix}_mr_SS_RegistrationImage_{patient_ID}.nii.gz")  
         brain_extract(mr_resample_file, mr_mask_file, mr_brain_mask_file, "mri")
 
 
@@ -148,7 +149,7 @@ def full_pipeline(
             )
         
         logging.info("   5.2 ++++ : Saving Willis Cube for CT")
-        ct_cube_file = join(nn_resolution_path, f"{prefix}_ct_cube.nii.gz")
+        ct_cube_file = join(nn_resolution_path, f"{prefix}_ct_cube_{patient_ID}.nii.gz")
         nib.Nifti1Image(ct_cube, ct_nii_attributes.affine, ct_nii_attributes.header).to_filename(ct_cube_file)
 
         logging.info("   5.3 ++++ : Creating Willis Cube for MR")
@@ -160,33 +161,33 @@ def full_pipeline(
             )
         
         logging.info("   5.4 ++++ : Saving Willis Cube for MR")
-        mr_cube_file = join(nn_resolution_path, f"{prefix}_mr_cube.nii.gz")
+        mr_cube_file = join(nn_resolution_path, f"{prefix}_mr_cube_{patient_ID}.nii.gz")
         nib.Nifti1Image(mr_cube, mr_nii_attributes.affine, mr_nii_attributes.header).to_filename(mr_cube_file)
 
         logging.info("6. ===> Cropping and re-anchoring scan data <===")
 
         logging.info("   6.1 ++++ : Cropping an re-anchoring CT")
-        ct_cropped_file = join(nn_resolution_path, f"{prefix}_ct_cropped.nii.gz")
-        ct_cropped_seg_file = join(nn_resolution_path, f"{prefix}_ct_cropped_seg.nii.gz")
+        ct_cropped_file = join(nn_resolution_path, f"{prefix}_ct_cropped_{patient_ID}.nii.gz")
+        ct_cropped_seg_file = join(nn_resolution_path, f"{prefix}_ct_cropped_seg_{patient_ID}.nii.gz")
         crop_to_roi_cube(ct_resample_file, ct_cube_file, ct_seg_resample_file, ct_cropped_file, ct_cropped_seg_file)
 
         logging.info("   6.2 ++++ : Cropping an re-anchoring MR")
-        mr_cropped_file = join(nn_resolution_path, f"{prefix}_mr_cropped.nii.gz")
-        mr_cropped_seg_file = join(nn_resolution_path, f"{prefix}_mr_cropped_seg.nii.gz")
+        mr_cropped_file = join(nn_resolution_path, f"{prefix}_mr_cropped_{patient_ID}.nii.gz")
+        mr_cropped_seg_file = join(nn_resolution_path, f"{prefix}_mr_cropped_seg_{patient_ID}.nii.gz")
         mr_bbox, _ = crop_to_roi_cube(mr_resample_file, mr_cube_file, mr_seg_resample_file, mr_cropped_file, mr_cropped_seg_file, return_bbox=True)
 
-        mr_bbox_file = join(nn_resolution_path, f"{prefix}_mr_bbox.npy")
+        mr_bbox_file = join(nn_resolution_path, f"{prefix}_mr_bbox_{patient_ID}.npy")
         np.save(mr_bbox_file, mr_bbox)
 
     else:
-        ct_cropped_file = join(nn_resolution_path, f"{prefix}_ct_cropped.nii.gz")
-        mr_resample_file = join(nn_resolution_path, f"{prefix}_mr_resampled.nii.gz")
-        mr_seg_resample_file = join(nn_resolution_path, f"{prefix}_mr_seg_resampled.nii.gz")
-        mr_bbox_file = join(nn_resolution_path, f"{prefix}_mr_bbox.npy")
+        ct_cropped_file = join(nn_resolution_path, f"{prefix}_ct_cropped_{patient_ID}.nii.gz")
+        mr_resample_file = join(nn_resolution_path, f"{prefix}_mr_resampled_{patient_ID}.nii.gz")
+        mr_seg_resample_file = join(nn_resolution_path, f"{prefix}_mr_seg_resampled_{patient_ID}.nii.gz")
+        mr_bbox_file = join(nn_resolution_path, f"{prefix}_mr_bbox_{patient_ID}.npy")
         mr_bbox = np.load(mr_bbox_file)
 
-    mr_aligned_file = join(nn_resolution_path, f"{prefix}_mr_aligned.nii.gz")
-    mr_aligned_seg_file = join(nn_resolution_path, f"{prefix}_mr_aligned_seg.nii.gz")
+    mr_aligned_file = join(nn_resolution_path, f"{prefix}_mr_aligned_{patient_ID}.nii.gz")
+    mr_aligned_seg_file = join(nn_resolution_path, f"{prefix}_mr_aligned_seg_{patient_ID}.nii.gz")
 
     imin, imax, jmin, jmax, kmin, kmax = mr_bbox
 
@@ -204,7 +205,7 @@ def full_pipeline(
             transform_prefix = join(nn_resolution_path, f"{prefix}_transform_")
         )
     else:
-        transforms = join(nn_resolution_path, f"{prefix}_transform_Composite.h5")
+        transforms = join(nn_resolution_path, f"{prefix}_transform_Composite_{patient_ID}.h5")
 
     # ----------------------------------------------------------
     # 2. build a new affine for the *whole* MR volume
@@ -226,13 +227,13 @@ def full_pipeline(
     mr_hdr_seg = mr_full_seg.header.copy()
     mr_hdr_seg.set_data_dtype(np.uint8)
 
-    mr_reanchored_file = join(nn_resolution_path, f"{prefix}_mr_reanchored.nii.gz")
-    mr_reanchored_seg_file = join(nn_resolution_path, f"{prefix}_mr_reanchored_seg.nii.gz")
+    mr_reanchored_file = join(nn_resolution_path, f"{prefix}_mr_reanchored_{patient_ID}.nii.gz")
+    mr_reanchored_seg_file = join(nn_resolution_path, f"{prefix}_mr_reanchored_seg_{patient_ID}.nii.gz")
     nib.Nifti1Image(mr_full_data, new_affine, mr_full.header).to_filename(mr_reanchored_file)
     nib.Nifti1Image(mr_full_seg_data, new_affine, mr_hdr_seg).to_filename(mr_reanchored_seg_file)
 
-    aligned_mr_cube      = join(nn_resolution_path, f"{prefix}_mr_aligned_cube.nii.gz")
-    aligned_mr_seg_cube  = join(nn_resolution_path, f"{prefix}_mr_aligned_seg_cube.nii.gz")
+    aligned_mr_cube      = join(nn_resolution_path, f"{prefix}_mr_aligned_cube_{patient_ID}.nii.gz")
+    aligned_mr_seg_cube  = join(nn_resolution_path, f"{prefix}_mr_aligned_seg_cube_{patient_ID}.nii.gz")
 
     logging.info("8. ===> Applying Computed Transform to MR <===")
 

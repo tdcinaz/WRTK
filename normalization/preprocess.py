@@ -8,7 +8,8 @@ import argparse
 import logging
 import os
 import sys
-from os.path import exists
+from os.path import exists, join
+import shutil
 
 from normalize import full_pipeline
 
@@ -79,6 +80,12 @@ def parse_arguments() -> argparse.Namespace:
         "--skip",
         action="store_true",
     )
+    parser.add_argument(
+        "-b",
+        "--batch_mode",
+        action="store_true"
+    )
+
     args = parser.parse_args()
 
     return args
@@ -131,8 +138,40 @@ def main():
     #    file_path = os.path.basename(args.)
     #    prefix = file_path.replace(".gz", "").replace(".nii", "")
 
+    if args.batch_mode:
+        os.makedirs(join(args.output, "all_scans"), exist_ok=True)
+        args.patient_ID = "001"
+        
+        for i in range(125):
+            folder_name = "topcow" + args.patient_ID
+            patient_folder = join(args.output, folder_name)            
+            os.makedirs(patient_folder, exist_ok=True)
+            os.makedirs(join(patient_folder, "ct_mask"), exist_ok=True)
+            os.makedirs(join(patient_folder, "mr_mask"), exist_ok=True)
 
-    full_pipeline(args, prefix)
+            full_pipeline(args, prefix)
+            args.patient_ID = str(int(args.patient_ID) + 1)
+            while len(args.patient_ID) < 3:
+                args.patient_ID = "0" + args.patient_ID
+        
+        patient_ID = "001"
+        for i in range(125):
+            folder_name = "topcow" + patient_ID
+            ct_folder = join(args.output, folder_name, "ct_mask")
+            mr_folder = join(args.output, folder_name, "mr_mask")
+
+            shutil.move()
+            shutil.move()
+            shutil.move()
+            shutil.move()
+            shutil.move()
+            shutil.move()
+
+
+
+    else:
+        full_pipeline(args, prefix)
+    
 
 
 if __name__ == "__main__":
