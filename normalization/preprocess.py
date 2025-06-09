@@ -145,8 +145,12 @@ def main():
         all_scans = "tests/output/all_scans"
         os.makedirs(all_scans, exist_ok=True)
         args.patient_ID = "001"
-        
-        for i in range(125):
+        scan_folder = join(args.input, "imagesTr")
+
+        for scan in scan_folder:
+            if "mr" in scan:
+                break
+
             folder_name = "topcow" + args.patient_ID
             patient_folder = join(all_scans, folder_name)
 
@@ -157,40 +161,20 @@ def main():
 
             full_pipeline(args, prefix)
 
-            #patient_IDs are not continuous
-            if args.patient_ID == "090":
-                args.patient_ID = "131"
-            else:
-                args.patient_ID = str(int(args.patient_ID) + 1)
+            args.patient_ID = scan[10:12]
+            
 
-            while len(args.patient_ID) < 3:
-                args.patient_ID = "0" + args.patient_ID
-        
-        patient_ID = "001"
-        os.listdir(join(args.ouput), "batch_scans")
-
-        for i in range(125):
-            folder_name = "topcow" + patient_ID
+            folder_name = "topcow" + args.patient_ID
             ct_folder = join(all_scans, folder_name, "ct_mask")
             mr_folder = join(all_scans, folder_name, "mr_mask")
 
-
-            shutil.move(join(args.output, "nn_space", (f"topcow_ct_cropped_{patient_ID}.nii.gz")), ct_folder)
-            shutil.move(join(args.output, "nn_space", (f"topcow_ct_cropped_seg_{patient_ID}.nii.gz")), ct_folder)
-            shutil.move(join(args.output, "nn_space", (f"topcow_mr_aligned_cube_{patient_ID}.nii.gz")), ct_folder)
-            shutil.move(join(args.output, "nn_space", (f"topcow_mr_cropped_{patient_ID}.nii.gz")), mr_folder)
-            shutil.move(join(args.output, "nn_space", (f"topcow_mr_cropped_seg_{patient_ID}.nii.gz")), mr_folder)
-            shutil.move(join(args.output, "nn_space", (f"topcow_ct_aligned_cube_{patient_ID}.nii.gz")), mr_folder)
-
-            if patient_ID == "090":
-                patient_ID = "131"
-            else:
-                patient_ID =str(int(args.patient_ID) + 1)
-
-            while len(patient_ID) < 3:
-                patient_ID = "0" + patient_ID
-
-        shutil.rmtree(args.output)
+            shutil.move(join(args.output, "nn_space", (f"topcow_ct_cropped_{args.patient_ID}.nii.gz")), ct_folder)
+            shutil.move(join(args.output, "nn_space", (f"topcow_ct_cropped_seg_{args.patient_ID}.nii.gz")), ct_folder)
+            shutil.move(join(args.output, "nn_space", (f"topcow_mr_aligned_cube_{args.patient_ID}.nii.gz")), ct_folder)
+            shutil.move(join(args.output, "nn_space", (f"topcow_mr_cropped_{args.patient_ID}.nii.gz")), mr_folder)
+            shutil.move(join(args.output, "nn_space", (f"topcow_mr_cropped_seg_{args.patient_ID}.nii.gz")), mr_folder)
+            shutil.move(join(args.output, "nn_space", (f"topcow_ct_aligned_cube_{args.patient_ID}.nii.gz")), mr_folder)
+            shutil.rmtree(args.output)
 
 
     else:
