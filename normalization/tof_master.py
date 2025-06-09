@@ -159,6 +159,7 @@ def coregister_ct_mr(
 
     reg_res = reg.run()                                              # 🚀 run ANTs
     fwd_xforms = reg_res.outputs.composite_transform                 # ordered for antsApplyTransforms
+    inv_xforms = reg_res.outputs.inverse_composite_transform
 
     apply_transform(
         moving_mask,
@@ -167,7 +168,7 @@ def coregister_ct_mr(
         str(out_moving_mask_aligned),
     )
 
-    return str(out_moving_aligned), fwd_xforms
+    return str(out_moving_aligned), fwd_xforms, inv_xforms
 
 
 def apply_transform(
