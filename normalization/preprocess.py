@@ -144,14 +144,25 @@ def main():
         #creates a directory called all scans, initially is empty
         all_scans = "tests/output/all_scans"
         os.makedirs(all_scans, exist_ok=True)
-        args.patient_ID = "001"
-        scan_folder = join(args.input, "imagesTr")
+        scan_folder = os.listdir(join(args.input_folder, "imagesTr"))
+        output_folder = os.listdir(all_scans)
+        already_completed = False
 
         for scan in scan_folder:
+            args.patient_ID = scan[10:13]
+            already_completed = False
+            
             if "mr" in scan:
-                break
+                continue
 
-            folder_name = "topcow" + args.patient_ID
+            for completed in output_folder:
+                if args.patient_ID in completed:
+                    already_completed = True
+            
+            if already_completed:
+                continue
+            
+            folder_name = "topcow_" + args.patient_ID
             patient_folder = join(all_scans, folder_name)
 
             #creates patient_folders to move the files to later            
@@ -159,22 +170,23 @@ def main():
             os.makedirs(join(patient_folder, "ct_mask"), exist_ok=True)
             os.makedirs(join(patient_folder, "mr_mask"), exist_ok=True)
 
-            full_pipeline(args, prefix)
+            try:
+                full_pipeline(args, prefix)
+                
+                folder_name = "topcow_" + args.patient_ID
+                ct_folder = join(all_scans, folder_name, "ct_mask")
+                mr_folder = join(all_scans, folder_name, "mr_mask")
 
-            args.patient_ID = scan[10:12]
-            
+                shutil.move(join(args.output, "nn_space", (f"topcow_ct_cropped_{args.patient_ID}.nii.gz")), ct_folder)
+                shutil.move(join(args.output, "nn_space", (f"topcow_ct_cropped_seg_{args.patient_ID}.nii.gz")), ct_folder)
+                shutil.move(join(args.output, "nn_space", (f"topcow_mr_aligned_cube_{args.patient_ID}.nii.gz")), ct_folder)
+                shutil.move(join(args.output, "nn_space", (f"topcow_mr_cropped_{args.patient_ID}.nii.gz")), mr_folder)
+                shutil.move(join(args.output, "nn_space", (f"topcow_mr_cropped_seg_{args.patient_ID}.nii.gz")), mr_folder)
+                shutil.move(join(args.output, "nn_space", (f"topcow_ct_aligned_cube_{args.patient_ID}.nii.gz")), mr_folder)
+                shutil.rmtree(args.output)
+            except:
+                print("ERROR: ", scan)
 
-            folder_name = "topcow" + args.patient_ID
-            ct_folder = join(all_scans, folder_name, "ct_mask")
-            mr_folder = join(all_scans, folder_name, "mr_mask")
-
-            shutil.move(join(args.output, "nn_space", (f"topcow_ct_cropped_{args.patient_ID}.nii.gz")), ct_folder)
-            shutil.move(join(args.output, "nn_space", (f"topcow_ct_cropped_seg_{args.patient_ID}.nii.gz")), ct_folder)
-            shutil.move(join(args.output, "nn_space", (f"topcow_mr_aligned_cube_{args.patient_ID}.nii.gz")), ct_folder)
-            shutil.move(join(args.output, "nn_space", (f"topcow_mr_cropped_{args.patient_ID}.nii.gz")), mr_folder)
-            shutil.move(join(args.output, "nn_space", (f"topcow_mr_cropped_seg_{args.patient_ID}.nii.gz")), mr_folder)
-            shutil.move(join(args.output, "nn_space", (f"topcow_ct_aligned_cube_{args.patient_ID}.nii.gz")), mr_folder)
-            shutil.rmtree(args.output)
 
 
     else:
@@ -184,3 +196,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+list = os.listdir("tests/output/all_scans")
+count = 0
+for folder in list:
+    if len(os.listdir(join(folder, "ct_mask"))):
+        count += 1
