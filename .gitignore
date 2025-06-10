@@ -2,3 +2,5 @@ tests/input/
 tests/output/
 normalization/__pycache__
 normalization/__pycache__/
+training/imagesTr/
+training/labelsTr/
