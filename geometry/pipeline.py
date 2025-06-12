@@ -3,11 +3,12 @@ import argparse
 import os
 from os.path import join
 import logging
+import pyvista as pv
 from geometry_master import (
     compute_label_volumes,
-    nifti_to_vtk_image_data,
+    nifti_to_pv_image_data,
     extract_labeled_surface_from_volume,
-    save_surface_to_vtp
+    extract_individual_surfaces
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -40,17 +41,20 @@ def pipeline(
     volume_dict = compute_label_volumes(nifti_img)
     logging.info(f"++++ : Volume for each label: {volume_dict}")
 
-    vtk_image = nifti_to_vtk_image_data(nifti_img)
+    vtk_image = nifti_to_pv_image_data(nifti_img)
     logging.info(f"++++ : Image {prefix}_{patient_ID} loaded")
 
     # 2) Extract surface
 
     logging.info(f"++++ : Extracting surface")
     labeled_polydata = extract_labeled_surface_from_volume(vtk_image)
-    
 
+    repaired_polydata = extract_individual_surfaces(labeled_polydata)
+
+    repaired_polydata.plot(scalars='BoundaryLabels')
+    
     surface_file = join(patient_output_path, f"{prefix}_{patient_ID}_surface.vtp")
 
-    save_surface_to_vtp(labeled_polydata, surface_file)
+    repaired_polydata.save(surface_file)
 
     logging.info(f"Surface extracted and saved to '{surface_file}'")
