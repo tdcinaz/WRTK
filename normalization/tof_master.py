@@ -14,97 +14,287 @@ from raster_geometry import cube
 from scipy.ndimage import center_of_mass
 from typing import List
 
-def register_template(
-    fixed_file: str,
-    moving_file: str,
-    template_file: str,
-    output_dir: str,
-    return_transform=False,
-) -> Union[np.ndarray, Tuple[np.ndarray, Optional[str]]]:
-    # Command line
-    """Equivalent bash command line call to ANTs.
-
-    antsRegistration --verbose 1 \
-        --dimensionality 3 \
-        --float 0 \
-        --collapse-output-transforms 1 \
-        --output [ WILLIS_ANTS,WILLIS_ANTSWarped.nii.gz,WILLIS_ANTSInverseWarped.nii.gz ] \
-        --interpolation Linear \
-        --use-histogram-matching 1 \
-        --winsorize-image-intensities [ 0.005,0.995 ] \
-        -x [ NN_rabox_mask.nii.gz, NULL ] \
-        --initial-moving-transform [ NN_rabox.nii.gz,/Users/kw2/masks/AVG_TOF_MNI.nii.gz,1 ] \
-        --transform Rigid[ 0.1 ] \
-        --metric MI[ NN_rabox.nii.gz,/Users/kw2/masks/AVG_TOF_MNI.nii.gz,1,32,Regular,0.25 ] \
-        --convergence [ 1000x500x250x0,1e-6,10 ] \
-        --shrink-factors 12x8x4x2 \
-        --smoothing-sigmas 4x3x2x1vox \
-        --transform Affine[ 0.1 ] \
-        --metric MI[ NN_rabox.nii.gz,/Users/kw2/masks/AVG_TOF_MNI.nii.gz,1,32,Regular,0.25 ] \
-        --convergence [ 1000x500x250x0,1e-6,10 ] \
-        --shrink-factors 12x8x4x2 \
-        --smoothing-sigmas 4x3x2x1vox
+def autobox_image(in_file: str, out_file: str, pad: int = 6):
+    """Automatic crop input file.
 
     Args:
-        fixed_file (str): Reference used to compute transformations.
-        moving_file (str): File to register to fixed file.
-        template_file (str): Template file where transformations are applied.
-        output_dir (str): output directory to put transformations.
-        return_transform (bool, optional): Return transformation. Defaults to False.
+        in_file (str): Path of the input to crop.
+        out_file (str): Path to save the result.
+        pad (int, optional): Number of voxel to have a border. Defaults to 6.
+    """
+    # Autoboxing
+    abox = afni.Autobox()
+    abox.inputs.in_file = in_file
+    abox.inputs.out_file = out_file
+    abox.inputs.padding = pad
+    abox.inputs.args = "-overwrite"
+    abox.run()
+    return nib.load(out_file)
+
+
+def crop_mask_like(mask_file: str, master_file: str, out_file: str):
+    """
+    Resample a segmentation/label mask so that it has
+    the same grid (FOV, voxel size, orientation) as
+    the image produced by 3dAutobox.
+
+    Parameters
+    ----------
+    mask_file  : path to the *uncropped* mask
+    master_file: path to the image returned by `autobox_image`
+    out_file   : where to write the cropped mask (defaults to
+                 <mask stem>_crop.nii.gz in the same folder)
+
+    Returns
+    -------
+    nib.Nifti1Image of the resampled mask.
+    """
+    if out_file is None:
+        stem = pathlib.Path(mask_file).with_suffix('').name
+        out_file = f"{stem}_crop.nii.gz"
+
+    rs = afni.Resample()
+    rs.inputs.in_file = mask_file        # original mask
+    rs.inputs.master  = master_file      # the autoboxed image
+    rs.inputs.out_file = out_file
+    rs.inputs.resample_mode = "NN"               # keep integer labels
+    rs.inputs.args  = "-overwrite"
+    rs.run()
+    return nib.load(out_file)
+
+
+def resample(
+    in_file: str,
+    out_file: str,
+    resolution: Optional[Tuple] = None,
+    master: Optional[str] = None,
+    resample_mode="Cu",
+) -> nib.Nifti1Image:
+    """Resample volume using afni.
+
+    Args:
+        in_file (str): Input file to register.
+        out_file (str): Output file to store the result.
+        resolution (Tuple, optional): Voxel size used to resample. Defaults to None.
+        master (str, optional): Image path to use as reference. Defaults to None.
+        resample_mode (str, optional): Type of interpolation to use. Defaults to "Cu".
+
+    Raises:
+        ValueError: thrown if neither resolution or master are not defined.
 
     Returns:
-        Union[np.ndarray, Tuple[np.ndarray, Optional[str]]]:
-            template data registered, with transformation if enabled.
+        nib.Nifti1Image: The resampled image.
     """
 
-    # Nipype
-    reg = Registration()
-    reg.inputs.verbose = True
-    reg.inputs.dimension = 3
-    reg.inputs.float = False
-    reg.inputs.collapse_output_transforms = True
-    reg.inputs.output_warped_image = join(output_dir, "AVG_TOF_MNI_native.nii.gz")
-    reg.inputs.output_inverse_warped_image = join(output_dir, "NN_rabox_MNI.nii.gz")
-    reg.inputs.output_transform_prefix = join(output_dir, "WILLIS_ANTS")
-    reg.inputs.interpolation = "Linear"
-    reg.inputs.use_histogram_matching = True
-    reg.inputs.winsorize_lower_quantile = 0.025
-    reg.inputs.winsorize_upper_quantile = 0.975
-    reg.inputs.initial_moving_transform_com = 1
-    reg.inputs.transforms = ["Rigid", "Affine"]
-    reg.inputs.transform_parameters = [(0.1,), (0.1,)]
-    reg.inputs.metric = ["MI", "MI"]
-    reg.inputs.fixed_image = fixed_file
-    reg.inputs.moving_image = moving_file
-    reg.inputs.metric_weight = [1, 1]
-    reg.inputs.radius_or_number_of_bins = [32, 32]
-    reg.inputs.sampling_strategy = ["Regular", "Regular"]
-    reg.inputs.sampling_percentage = [0.25, 0.25]
-    reg.inputs.number_of_iterations = [
-        [1000, 500, 250, 100, 50],
-        [1000, 500, 250, 100, 50],
-    ]
-    reg.inputs.convergence_threshold = [1.6e-6, 1.6e-6]
-    reg.inputs.shrink_factors = [[12, 8, 4, 2, 1], [12, 8, 4, 2, 1]]
-    reg.inputs.smoothing_sigmas = [[4, 3, 2, 1, 0], [4, 3, 2, 1, 0]]
-    reg.inputs.sigma_units = ["vox", "vox"]
-    # Use 1 to have deterministic registration
-    reg.inputs.num_threads = multiprocessing.cpu_count()
-    # print(reg.cmdline)
-    reg.run()
+    if resolution is None and master is None:
+        raise ValueError("At least on of the `resolution` or `master` parameter should be defined.")
 
-    # Template Transformation
-    sphere = apply_transform(
-        template_file,
-        fixed_file,
-        join(output_dir, "WILLIS_ANTS0GenericAffine.mat"),
-        join(output_dir, "willis_sphere.nii.gz"),
-    )
+    # Constructing afni call
+    afni_resample = afni.Resample()
+    afni_resample.inputs.in_file = in_file
+    afni_resample.inputs.out_file = out_file
+    afni_resample.inputs.outputtype = "NIFTI"
+    afni_resample.inputs.resample_mode = resample_mode
+    afni_resample.inputs.args = "-overwrite"
 
-    if return_transform:
-        return sphere, join(output_dir, "WILLIS_ANTS0GenericAffine.mat")
+    if master is not None:
+        afni_resample.inputs.master = master
+    else:
+        afni_resample.inputs.voxel_size = resolution
 
-    return sphere
+    afni_resample.run()
+    return nib.load(out_file)
+
+
+def brain_extract(in_file: str,
+                  out_mask: str,
+                  out_brain: str,
+                  modality: str = "auto",
+                  use_gpu = False,
+                  use_hdbet = False,
+                  ) -> nib.Nifti1Image:
+    """
+    Brain‑extracts MRI or CT angiography volumes using the best available tool.
+
+    Parameters
+    ----------
+    in_file   : path to source NIfTI
+    out_mask  : binary mask (.nii.gz)
+    out_brain : brain‑only volume (.nii.gz)
+    modality  : 'MRI', 'CT', or 'auto' (detect from header)
+
+    Returns
+    -------
+    nib.Nifti1Image of the binary mask
+    """
+    threads = multiprocessing.cpu_count()
+
+    # crude modality check (fallback if user does not pass it)
+    if modality == "auto":
+        hdr = nib.load(in_file).header
+        modality = "CT" if hdr.get("db_name",b"").startswith(b"CT") or hdr.get_xyzt_units()[0] == "unknown" else "MRI"
+
+    tool = None
+    if modality.upper() == "MRI":
+        try:
+            subprocess.run(["mri_synthstrip", "-i", in_file,
+                            "-m", out_mask, "-o", out_brain, "-t", str(threads)] + (["-g"] if use_gpu else []), check=True)
+        except:
+            tool = "afni"
+
+        '''if use_hdbet:
+            try:                               # fastest if available
+                #subprocess.run(["hd-bet", "-i", in_file, "-o", out_mask,
+                #                "-device", "cpu", "-mode", "fast"], check=True)
+                subprocess.run(["hd-bet", "-i", in_file, "-o", out_mask, "-device"] + (["0"] if use_gpu else ["cpu"]), check=True)
+                tool = "HD‑BET"
+                print("Skull stripped with HD-BET")
+            except:
+                print("HD‑BET not found, falling back to afni")
+                tool = "afni"
+        else:
+            tool = "afni"'''
+        
+
+    if modality.upper() == "CT":
+        try:
+            subprocess.run(["mri_synthstrip", "-i", in_file,
+                            "-m", out_mask, "-o", out_brain, "-t", str(threads)] + (["-g"] if use_gpu else []), check=True)
+            tool = "mri_synthstrip"
+        except FileNotFoundError:
+            tool = "TotalSegmentator"
+
+    if tool == "afni":                      # fallback for MRI only
+        ss = afni.SkullStrip(in_file=in_file,
+                             out_file=out_mask,
+                             args="-overwrite",
+                             outputtype="NIFTI_GZ",
+                             num_threads=threads)
+        ss.run()
+        print("afni skull stripping complete")
+    elif tool == "TotalSegmentator":       # fallback for CT only
+        tmp_dir = pathlib.Path(out_mask).with_suffix("")
+        subprocess.run(["TotalSegmentator", "-i", in_file,
+                        "-o", str(tmp_dir), "--fast"], check=True)
+        brain_label = tmp_dir / "brain.nii.gz"
+        os.rename(brain_label, out_mask)
+    # apply the mask to generate brain‑only volume
+    subprocess.run(["fslmaths", in_file, "-mas", out_mask, out_brain], check=True)
+    return nib.load(out_mask)
+
+
+def create_willis_cube(
+    fixed_file: str,
+    output_dir: str,
+    moving_file: Optional[str] = None,
+    template_file: Optional[str] = None,
+    transform: Optional[str] = None,
+    invert=False,
+    side=90,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Generate the willis sphere from the template.
+
+    Args:
+        fixed_file (str): Reference file.
+        output_dir (str): Output directory of files.
+        moving_file (str, optional): File to register.
+        template_file (str, optional): Template file to register along with the moving file.
+        transform (str, optional): Use this transformation if provided.
+        invert (bool, optional): Invert the transformation. Defaults to False.
+        side (int, optional): Side of cube in voxel. Defaults to 90.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: Return the sphere, and cube.
+    """
+
+    # Registering MNI willis sphere to native space
+    if transform is None:
+        sphere = register_template(fixed_file, moving_file, template_file, output_dir)
+    else:
+        sphere = apply_transform(
+            template_file,
+            fixed_file,
+            transform,
+            join(output_dir, "willis_sphere.nii.gz"),
+            invert=invert,
+        )
+
+    return sphere, create_cube(sphere, side=side)
+
+
+def crop_to_roi_cube(
+        scan_nii: str,
+        roi_mask_nii: str,
+        seg_mask_nii: str,
+        out_scan_nii: str,
+        out_seg_nii: str,
+        out_mask_nii: Optional[str] = None,
+        return_bbox: bool = False
+    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """
+    Crop a neuroimaging volume to the bounding cube of its binary ROI mask
+    and reset the affine so the corner of that cube is the new (0,0,0).
+
+    Parameters
+    ----------
+    scan_nii      : path to the full-field intensity image (.nii or .nii.gz)
+    roi_mask_nii  : matching binary ROI-cube mask (same grid as scan_nii)
+    out_scan_nii  : output filename for the cropped image
+    out_mask_nii  : (optional) output filename for the cropped mask
+    return_bbox   : if True, return (imin,imax,jmin,jmax,kmin,kmax)
+
+    Returns
+    -------
+    (bbox_img, bbox_msk) if return_bbox else None
+    """
+    scan_obj: nib.Nifti1Image = nib.load(str(scan_nii))
+    mask_obj: nib.Nifti1Image = nib.load(str(roi_mask_nii))
+    seg_obj: nib.Nifti1Image = nib.load(str(seg_mask_nii))
+
+    scan      = scan_obj.get_fdata(dtype=np.float32, caching='unchanged')
+    mask_data = mask_obj.get_fdata(dtype=np.float32,  caching='unchanged').astype(np.uint8)
+    seg_data  = seg_obj.get_fdata(dtype=np.float32, caching='unchanged').astype(np.uint8)
+
+    if mask_data.max() == 0:
+        raise ValueError("ROI mask is empty – nothing to crop.")
+
+    # ---------- 1. find ROI cube extents (voxels) ----------
+    nz       = np.nonzero(mask_data)
+    imin, jmin, kmin = [int(c.min()) for c in nz]
+    imax, jmax, kmax = [int(c.max()) + 1 for c in nz]   # +1 → Python-style stop‐index
+
+    # ---------- 2. crop ----------
+    cropped_scan = scan [imin:imax, jmin:jmax, kmin:kmax]
+    cropped_mask = mask_data[imin:imax, jmin:jmax, kmin:kmax]
+    cropped_seg = seg_data[imin:imax, jmin:jmax, kmin:kmax]
+
+    # ---------- 3. build new affine with origin at cube corner ----------
+    #
+    # Original affine: Xworld = A[:, :3] @ (i, j, k) + A[:, 3]
+    # After cropping we want voxel (0,0,0) to map to Xworld = (0,0,0).
+    #
+    new_affine          = scan_obj.affine.copy()
+    new_affine[:3, 3]   = 0.0            # translate origin to (0,0,0)
+    # (The rotation / scaling block new_affine[:3,:3] is left unchanged.)
+
+    # ---------- 4. save ----------
+    hdr: nib.Nifti1Header = scan_obj.header.copy()
+    hdr.set_data_dtype(np.float32)
+
+    nib.save(nib.Nifti1Image(cropped_scan, new_affine, hdr), out_scan_nii)
+
+    hdr_seg: nib.Nifti1Header = seg_obj.header.copy()
+    hdr_seg.set_data_dtype(np.uint8)
+    nib.save(nib.Nifti1Image(cropped_seg, new_affine, hdr_seg), out_seg_nii)
+
+
+    if out_mask_nii is not None:
+        hdr_mask: nib.Nifti1Header = mask_obj.header.copy()
+        hdr_mask.set_data_dtype(np.uint8)
+        nib.save(nib.Nifti1Image(cropped_mask, new_affine, hdr_mask), out_mask_nii)
+
+    if return_bbox:
+        return (imin, imax, jmin, jmax, kmin, kmax), new_affine
 
 
 def coregister_ct_mr(
@@ -207,6 +397,99 @@ def apply_transform(
     return nib.load(output).get_fdata("unchanged")
 
 
+def register_template(
+    fixed_file: str,
+    moving_file: str,
+    template_file: str,
+    output_dir: str,
+    return_transform=False,
+) -> Union[np.ndarray, Tuple[np.ndarray, Optional[str]]]:
+    # Command line
+    """Equivalent bash command line call to ANTs.
+
+    antsRegistration --verbose 1 \
+        --dimensionality 3 \
+        --float 0 \
+        --collapse-output-transforms 1 \
+        --output [ WILLIS_ANTS,WILLIS_ANTSWarped.nii.gz,WILLIS_ANTSInverseWarped.nii.gz ] \
+        --interpolation Linear \
+        --use-histogram-matching 1 \
+        --winsorize-image-intensities [ 0.005,0.995 ] \
+        -x [ NN_rabox_mask.nii.gz, NULL ] \
+        --initial-moving-transform [ NN_rabox.nii.gz,/Users/kw2/masks/AVG_TOF_MNI.nii.gz,1 ] \
+        --transform Rigid[ 0.1 ] \
+        --metric MI[ NN_rabox.nii.gz,/Users/kw2/masks/AVG_TOF_MNI.nii.gz,1,32,Regular,0.25 ] \
+        --convergence [ 1000x500x250x0,1e-6,10 ] \
+        --shrink-factors 12x8x4x2 \
+        --smoothing-sigmas 4x3x2x1vox \
+        --transform Affine[ 0.1 ] \
+        --metric MI[ NN_rabox.nii.gz,/Users/kw2/masks/AVG_TOF_MNI.nii.gz,1,32,Regular,0.25 ] \
+        --convergence [ 1000x500x250x0,1e-6,10 ] \
+        --shrink-factors 12x8x4x2 \
+        --smoothing-sigmas 4x3x2x1vox
+
+    Args:
+        fixed_file (str): Reference used to compute transformations.
+        moving_file (str): File to register to fixed file.
+        template_file (str): Template file where transformations are applied.
+        output_dir (str): output directory to put transformations.
+        return_transform (bool, optional): Return transformation. Defaults to False.
+
+    Returns:
+        Union[np.ndarray, Tuple[np.ndarray, Optional[str]]]:
+            template data registered, with transformation if enabled.
+    """
+
+    # Nipype
+    reg = Registration()
+    reg.inputs.verbose = True
+    reg.inputs.dimension = 3
+    reg.inputs.float = False
+    reg.inputs.collapse_output_transforms = True
+    reg.inputs.output_warped_image = join(output_dir, "AVG_TOF_MNI_native.nii.gz")
+    reg.inputs.output_inverse_warped_image = join(output_dir, "NN_rabox_MNI.nii.gz")
+    reg.inputs.output_transform_prefix = join(output_dir, "WILLIS_ANTS")
+    reg.inputs.interpolation = "Linear"
+    reg.inputs.use_histogram_matching = True
+    reg.inputs.winsorize_lower_quantile = 0.025
+    reg.inputs.winsorize_upper_quantile = 0.975
+    reg.inputs.initial_moving_transform_com = 1
+    reg.inputs.transforms = ["Rigid", "Affine"]
+    reg.inputs.transform_parameters = [(0.1,), (0.1,)]
+    reg.inputs.metric = ["MI", "MI"]
+    reg.inputs.fixed_image = fixed_file
+    reg.inputs.moving_image = moving_file
+    reg.inputs.metric_weight = [1, 1]
+    reg.inputs.radius_or_number_of_bins = [32, 32]
+    reg.inputs.sampling_strategy = ["Regular", "Regular"]
+    reg.inputs.sampling_percentage = [0.25, 0.25]
+    reg.inputs.number_of_iterations = [
+        [1000, 500, 250, 100, 50],
+        [1000, 500, 250, 100, 50],
+    ]
+    reg.inputs.convergence_threshold = [1.6e-6, 1.6e-6]
+    reg.inputs.shrink_factors = [[12, 8, 4, 2, 1], [12, 8, 4, 2, 1]]
+    reg.inputs.smoothing_sigmas = [[4, 3, 2, 1, 0], [4, 3, 2, 1, 0]]
+    reg.inputs.sigma_units = ["vox", "vox"]
+    # Use 1 to have deterministic registration
+    reg.inputs.num_threads = multiprocessing.cpu_count()
+    # print(reg.cmdline)
+    reg.run()
+
+    # Template Transformation
+    sphere = apply_transform(
+        template_file,
+        fixed_file,
+        join(output_dir, "WILLIS_ANTS0GenericAffine.mat"),
+        join(output_dir, "willis_sphere.nii.gz"),
+    )
+
+    if return_transform:
+        return sphere, join(output_dir, "WILLIS_ANTS0GenericAffine.mat")
+
+    return sphere
+
+
 def create_cube(roi_data: np.ndarray, side: int = 90) -> np.ndarray:
     """Create a cube from ROI sphere.
 
@@ -273,322 +556,3 @@ def mask_image(in_file: str, out_file: str, out_brain_masked: str) -> nib.Nifti1
 
     # Binary conversion of mask
     return nib.load(out_file)
-
-
-def brain_extract(in_file: str,
-                  out_mask: str,
-                  out_brain: str,
-                  modality: str = "auto",
-                  use_gpu = False,
-                  use_hdbet = False,
-                  ) -> nib.Nifti1Image:
-    """
-    Brain‑extracts MRI or CT angiography volumes using the best available tool.
-
-    Parameters
-    ----------
-    in_file   : path to source NIfTI
-    out_mask  : binary mask (.nii.gz)
-    out_brain : brain‑only volume (.nii.gz)
-    modality  : 'MRI', 'CT', or 'auto' (detect from header)
-
-    Returns
-    -------
-    nib.Nifti1Image of the binary mask
-    """
-    threads = multiprocessing.cpu_count()
-
-    # crude modality check (fallback if user does not pass it)
-    if modality == "auto":
-        hdr = nib.load(in_file).header
-        modality = "CT" if hdr.get("db_name",b"").startswith(b"CT") or hdr.get_xyzt_units()[0] == "unknown" else "MRI"
-
-    tool = None
-    if modality.upper() == "MRI":
-        try:
-            subprocess.run(["mri_synthstrip", "-i", in_file,
-                            "-m", out_mask, "-o", out_brain, "-t", str(threads)] + (["-g"] if use_gpu else []), check=True)
-        except:
-            tool = "afni"
-
-        '''if use_hdbet:
-            try:                               # fastest if available
-                #subprocess.run(["hd-bet", "-i", in_file, "-o", out_mask,
-                #                "-device", "cpu", "-mode", "fast"], check=True)
-                subprocess.run(["hd-bet", "-i", in_file, "-o", out_mask, "-device"] + (["0"] if use_gpu else ["cpu"]), check=True)
-                tool = "HD‑BET"
-                print("Skull stripped with HD-BET")
-            except:
-                print("HD‑BET not found, falling back to afni")
-                tool = "afni"
-        else:
-            tool = "afni"'''
-        
-
-    if modality.upper() == "CT":
-        try:
-            subprocess.run(["mri_synthstrip", "-i", in_file,
-                            "-m", out_mask, "-o", out_brain, "-t", str(threads)] + (["-g"] if use_gpu else []), check=True)
-            tool = "mri_synthstrip"
-        except FileNotFoundError:
-            tool = "TotalSegmentator"
-
-    if tool == "afni":                      # fallback for MRI only
-        ss = afni.SkullStrip(in_file=in_file,
-                             out_file=out_mask,
-                             args="-overwrite",
-                             outputtype="NIFTI_GZ",
-                             num_threads=threads)
-        ss.run()
-        print("afni skull stripping complete")
-    elif tool == "TotalSegmentator":       # fallback for CT only
-        tmp_dir = pathlib.Path(out_mask).with_suffix("")
-        subprocess.run(["TotalSegmentator", "-i", in_file,
-                        "-o", str(tmp_dir), "--fast"], check=True)
-        brain_label = tmp_dir / "brain.nii.gz"
-        os.rename(brain_label, out_mask)
-    # apply the mask to generate brain‑only volume
-    subprocess.run(["fslmaths", in_file, "-mas", out_mask, out_brain], check=True)
-    return nib.load(out_mask)
-
-
-def crop_to_roi_cube(
-        scan_nii: str,
-        roi_mask_nii: str,
-        seg_mask_nii: str,
-        out_scan_nii: str,
-        out_seg_nii: str,
-        out_mask_nii: Optional[str] = None,
-        return_bbox: bool = False
-    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    """
-    Crop a neuroimaging volume to the bounding cube of its binary ROI mask
-    and reset the affine so the corner of that cube is the new (0,0,0).
-
-    Parameters
-    ----------
-    scan_nii      : path to the full-field intensity image (.nii or .nii.gz)
-    roi_mask_nii  : matching binary ROI-cube mask (same grid as scan_nii)
-    out_scan_nii  : output filename for the cropped image
-    out_mask_nii  : (optional) output filename for the cropped mask
-    return_bbox   : if True, return (imin,imax,jmin,jmax,kmin,kmax)
-
-    Returns
-    -------
-    (bbox_img, bbox_msk) if return_bbox else None
-    """
-    scan_obj: nib.Nifti1Image = nib.load(str(scan_nii))
-    mask_obj: nib.Nifti1Image = nib.load(str(roi_mask_nii))
-    seg_obj: nib.Nifti1Image = nib.load(str(seg_mask_nii))
-
-    scan      = scan_obj.get_fdata(dtype=np.float32, caching='unchanged')
-    mask_data = mask_obj.get_fdata(dtype=np.float32,  caching='unchanged').astype(np.uint8)
-    seg_data  = seg_obj.get_fdata(dtype=np.float32, caching='unchanged').astype(np.uint8)
-
-    if mask_data.max() == 0:
-        raise ValueError("ROI mask is empty – nothing to crop.")
-
-    # ---------- 1. find ROI cube extents (voxels) ----------
-    nz       = np.nonzero(mask_data)
-    imin, jmin, kmin = [int(c.min()) for c in nz]
-    imax, jmax, kmax = [int(c.max()) + 1 for c in nz]   # +1 → Python-style stop‐index
-
-    # ---------- 2. crop ----------
-    cropped_scan = scan [imin:imax, jmin:jmax, kmin:kmax]
-    cropped_mask = mask_data[imin:imax, jmin:jmax, kmin:kmax]
-    cropped_seg = seg_data[imin:imax, jmin:jmax, kmin:kmax]
-
-    # ---------- 3. build new affine with origin at cube corner ----------
-    #
-    # Original affine: Xworld = A[:, :3] @ (i, j, k) + A[:, 3]
-    # After cropping we want voxel (0,0,0) to map to Xworld = (0,0,0).
-    #
-    new_affine          = scan_obj.affine.copy()
-    new_affine[:3, 3]   = 0.0            # translate origin to (0,0,0)
-    # (The rotation / scaling block new_affine[:3,:3] is left unchanged.)
-
-    # ---------- 4. save ----------
-    hdr: nib.Nifti1Header = scan_obj.header.copy()
-    hdr.set_data_dtype(np.float32)
-
-    nib.save(nib.Nifti1Image(cropped_scan, new_affine, hdr), out_scan_nii)
-
-    hdr_seg: nib.Nifti1Header = seg_obj.header.copy()
-    hdr_seg.set_data_dtype(np.uint8)
-    nib.save(nib.Nifti1Image(cropped_seg, new_affine, hdr_seg), out_seg_nii)
-
-
-    if out_mask_nii is not None:
-        hdr_mask: nib.Nifti1Header = mask_obj.header.copy()
-        hdr_mask.set_data_dtype(np.uint8)
-        nib.save(nib.Nifti1Image(cropped_mask, new_affine, hdr_mask), out_mask_nii)
-
-    if return_bbox:
-        return (imin, imax, jmin, jmax, kmin, kmax), new_affine
-
-
-def resample(
-    in_file: str,
-    out_file: str,
-    resolution: Optional[Tuple] = None,
-    master: Optional[str] = None,
-    resample_mode="Cu",
-) -> nib.Nifti1Image:
-    """Resample volume using afni.
-
-    Args:
-        in_file (str): Input file to register.
-        out_file (str): Output file to store the result.
-        resolution (Tuple, optional): Voxel size used to resample. Defaults to None.
-        master (str, optional): Image path to use as reference. Defaults to None.
-        resample_mode (str, optional): Type of interpolation to use. Defaults to "Cu".
-
-    Raises:
-        ValueError: thrown if neither resolution or master are not defined.
-
-    Returns:
-        nib.Nifti1Image: The resampled image.
-    """
-
-    if resolution is None and master is None:
-        raise ValueError("At least on of the `resolution` or `master` parameter should be defined.")
-
-    # Constructing afni call
-    afni_resample = afni.Resample()
-    afni_resample.inputs.in_file = in_file
-    afni_resample.inputs.out_file = out_file
-    afni_resample.inputs.outputtype = "NIFTI"
-    afni_resample.inputs.resample_mode = resample_mode
-    afni_resample.inputs.args = "-overwrite"
-
-    if master is not None:
-        afni_resample.inputs.master = master
-    else:
-        afni_resample.inputs.voxel_size = resolution
-
-    afni_resample.run()
-    return nib.load(out_file)
-
-
-def autobox_image(in_file: str, out_file: str, pad: int = 6):
-    """Automatic crop input file.
-
-    Args:
-        in_file (str): Path of the input to crop.
-        out_file (str): Path to save the result.
-        pad (int, optional): Number of voxel to have a border. Defaults to 6.
-    """
-    # Autoboxing
-    abox = afni.Autobox()
-    abox.inputs.in_file = in_file
-    abox.inputs.out_file = out_file
-    abox.inputs.padding = pad
-    abox.inputs.args = "-overwrite"
-    abox.run()
-    return nib.load(out_file)
-
-
-def crop_mask_like(mask_file: str, master_file: str, out_file: str):
-    """
-    Resample a segmentation/label mask so that it has
-    the same grid (FOV, voxel size, orientation) as
-    the image produced by 3dAutobox.
-
-    Parameters
-    ----------
-    mask_file  : path to the *uncropped* mask
-    master_file: path to the image returned by `autobox_image`
-    out_file   : where to write the cropped mask (defaults to
-                 <mask stem>_crop.nii.gz in the same folder)
-
-    Returns
-    -------
-    nib.Nifti1Image of the resampled mask.
-    """
-    if out_file is None:
-        stem = pathlib.Path(mask_file).with_suffix('').name
-        out_file = f"{stem}_crop.nii.gz"
-
-    rs = afni.Resample()
-    rs.inputs.in_file = mask_file        # original mask
-    rs.inputs.master  = master_file      # the autoboxed image
-    rs.inputs.out_file = out_file
-    rs.inputs.resample_mode = "NN"               # keep integer labels
-    rs.inputs.args  = "-overwrite"
-    rs.run()
-    return nib.load(out_file)
-
-
-def create_willis_cube(
-    fixed_file: str,
-    output_dir: str,
-    moving_file: Optional[str] = None,
-    template_file: Optional[str] = None,
-    transform: Optional[str] = None,
-    invert=False,
-    side=90,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Generate the willis sphere from the template.
-
-    Args:
-        fixed_file (str): Reference file.
-        output_dir (str): Output directory of files.
-        moving_file (str, optional): File to register.
-        template_file (str, optional): Template file to register along with the moving file.
-        transform (str, optional): Use this transformation if provided.
-        invert (bool, optional): Invert the transformation. Defaults to False.
-        side (int, optional): Side of cube in voxel. Defaults to 90.
-
-    Returns:
-        Tuple[np.ndarray, np.ndarray]: Return the sphere, and cube.
-    """
-    # Registering MNI willis sphere to native space
-    if transform is None:
-        sphere = register_template(fixed_file, moving_file, template_file, output_dir)
-    else:
-        sphere = apply_transform(
-            template_file,
-            fixed_file,
-            transform,
-            join(output_dir, "willis_sphere.nii.gz"),
-            invert=invert,
-        )
-
-    return sphere, create_cube(sphere, side=side)
-
-def pad_nifti(
-    img: nib.Nifti1Image,
-    pad: Tuple[int, int, int]        # (px, py, pz) voxels on EACH side
-) -> nib.Nifti1Image:
-    """
-    Zero-pad a NIfTI image on both ends of each axis.
-
-    Parameters
-    ----------
-    img  : nibabel.Nifti1Image
-        The input image.
-    pad  : tuple(int, int, int)
-        Number of voxels to add *on each side* of (x, y, z).
-        e.g. pad=(2,3,1) ➜ 2 vox on −x & +x, 3 on −y & +y, 1 on −z & +z.
-
-    Returns
-    -------
-    nibabel.Nifti1Image
-        A new image whose data array is padded and whose affine is
-        translated so real-world coordinates stay aligned.
-    """
-    # 1. Pad data
-    data = img.get_fdata(dtype=np.float32)   # or use .dataobj to avoid load
-    pad_width = tuple((p, p) for p in pad)   # [(−x,+x), (−y,+y), (−z,+z)]
-    data_padded = np.pad(data, pad_width, mode="constant", constant_values=0)
-
-    # 2. Update affine: shift origin by (−pad_x, −pad_y, −pad_z) voxels
-    aff = img.affine.copy()
-    translation_vox = -np.array(pad)
-    aff[:3, 3] += aff[:3, :3] @ translation_vox   # same as voxel→world shift
-
-    # 3. Build new header (copy keeps intent, pixdim, etc.)
-    hdr = img.header.copy()
-    hdr.set_data_shape(data_padded.shape)
-
-    return nib.Nifti1Image(data_padded, aff, hdr)
