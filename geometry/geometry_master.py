@@ -11,7 +11,7 @@ from scipy.spatial import cKDTree
 import os
 import re
 
-def nifti_to_vtk_image_data(nifti_img, dtype=np.float32):
+def nifti_to_vtk_image_data(nifti_img):
     """
     Convert a 3D NIfTI image to vtkImageData.
 
@@ -23,7 +23,7 @@ def nifti_to_vtk_image_data(nifti_img, dtype=np.float32):
         vtk.vtkImageData: The image data in VTK format.
     """
     # 1) Get the NumPy array from the NIfTI
-    data_array = nifti_img.get_fdata(dtype=dtype)
+    data_array = nifti_img.get_fdata(dtype=np.float32)
 
     # Ensure it's contiguous in memory
     data_array = np.ascontiguousarray(data_array)
