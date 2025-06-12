@@ -1,4 +1,8 @@
 import nibabel as nib
+import argparse
+import os
+from os.path import join
+import logging
 from geometry_master import (
     compute_label_volumes,
     nifti_to_vtk_image_data,
@@ -6,7 +10,12 @@ from geometry_master import (
     save_surface_to_vtp
 )
 
-def pipeline(input_segmentation, fileId, output_dir):
+logging.basicConfig(level=logging.INFO)
+
+def pipeline(
+    args: argparse.Namespace,
+    prefix: str,
+):
     """
     Main workflow:
       1) Load an existing NIfTI file from disk.
@@ -18,20 +27,29 @@ def pipeline(input_segmentation, fileId, output_dir):
         output_vtp_file (str): Desired output VTP file path.
     """
 
+    patient_ID = args.patient_ID
+
+    patient_input_path = join(args.input_folder, f"{prefix}_{patient_ID}.nii.gz")
+
+    patient_output_path = join(args.output, f"{prefix}_{patient_ID}")
+    os.makedirs(patient_output_path, exist_ok=True)
+
     # 1) Load the NIfTI with nibabel
-    nifti_img = nib.load(input_segmentation)
+    nifti_img: nib.Nifti1Image = nib.load(patient_input_path)
 
     volume_dict = compute_label_volumes(nifti_img)
-    print(volume_dict)
+    logging.info(f"++++ : Volume for each label: {volume_dict}")
 
     vtk_image = nifti_to_vtk_image_data(nifti_img)
-    print("Image Loaded")
+    logging.info(f"++++ : Image {prefix}_{patient_ID} loaded")
 
     # 2) Extract surface
 
     labeled_polydata = extract_labeled_surface_from_volume(vtk_image)
-    print("Surface Extracted")
+    logging.info(f"++++ : Surface extracted")
 
-    save_surface_to_vtp(resampled_surface, out_surface)
+    surface_file = join(patient_output_path, f"{prefix}_{patient_ID}_surface.vtp")
 
-    print(f"Surface extracted and saved to '{out_surface}'")
+    save_surface_to_vtp(labeled_polydata, surface_file)
+
+    logging.info(f"Surface extracted and saved to '{surface_file}'")
