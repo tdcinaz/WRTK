@@ -196,9 +196,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-list = os.listdir("tests/output/all_scans")
-count = 0
-for folder in list:
-    if len(os.listdir(join(folder, "ct_mask"))):
-        count += 1
