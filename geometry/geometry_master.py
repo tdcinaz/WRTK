@@ -5,6 +5,7 @@ import vtk
 from vtkmodules.util import numpy_support
 import pyvista as pv
 import pyacvd
+import logging
 from collections import defaultdict, deque
 from scipy.spatial import cKDTree
 import os
@@ -99,7 +100,6 @@ def extract_labeled_surface_from_volume(
     Returns:
         vtk.vtkPolyData: A polydata containing the labeled surface
     """
-    
 
     surface_net = vtk.vtkSurfaceNets3D()
     surface_net.SetInputData(input_vtk_image)
@@ -109,18 +109,13 @@ def extract_labeled_surface_from_volume(
     #surface_net.SmoothingOff()
     #surface_net.SetOutputMeshTypeToQuads()
 
-
     cleaner = vtk.vtkCleanPolyData()
     cleaner.SetInputConnection(surface_net.GetOutputPort())
     cleaner.Update()
-    #surface_net.Update()
 
-    print("Final Cells: ", cleaner.GetOutput().GetNumberOfCells())
-    #print("Final Cells: ", surface_net.GetOutput().GetNumberOfCells())
+    logging.info(f"    ++++ : Total Surface Cells: {cleaner.GetOutput().GetNumberOfCells()}")
 
     labeled_surface = cleaner.GetOutput()
-    #labeled_surface = surface_net.GetOutput()
-
 
     return labeled_surface
 

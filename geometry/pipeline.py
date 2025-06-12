@@ -45,8 +45,9 @@ def pipeline(
 
     # 2) Extract surface
 
+    logging.info(f"++++ : Extracting surface")
     labeled_polydata = extract_labeled_surface_from_volume(vtk_image)
-    logging.info(f"++++ : Surface extracted")
+    
 
     surface_file = join(patient_output_path, f"{prefix}_{patient_ID}_surface.vtp")
 
