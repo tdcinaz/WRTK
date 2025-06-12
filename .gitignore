@@ -1,5 +1,6 @@
 tests/input/
 tests/output/
+tests/geometry_output/
 normalization/__pycache__
 normalization/__pycache__/
 training/imagesTr/
