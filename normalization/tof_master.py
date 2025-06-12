@@ -115,7 +115,7 @@ def coregister_ct_mr(
         out_moving_aligned: str,
         out_moving_mask_aligned: str,
         transform_prefix: str = "CT2MR_",
-        use_syn: bool = True
+        use_syn: bool = False
     ) -> Tuple[str, List[str]]:
     """
     Rigid → Affine (→ optional SyN) registration of a CT scan to an MR scan
@@ -555,3 +555,40 @@ def create_willis_cube(
         )
 
     return sphere, create_cube(sphere, side=side)
+
+def pad_nifti(
+    img: nib.Nifti1Image,
+    pad: Tuple[int, int, int]        # (px, py, pz) voxels on EACH side
+) -> nib.Nifti1Image:
+    """
+    Zero-pad a NIfTI image on both ends of each axis.
+
+    Parameters
+    ----------
+    img  : nibabel.Nifti1Image
+        The input image.
+    pad  : tuple(int, int, int)
+        Number of voxels to add *on each side* of (x, y, z).
+        e.g. pad=(2,3,1) ➜ 2 vox on −x & +x, 3 on −y & +y, 1 on −z & +z.
+
+    Returns
+    -------
+    nibabel.Nifti1Image
+        A new image whose data array is padded and whose affine is
+        translated so real-world coordinates stay aligned.
+    """
+    # 1. Pad data
+    data = img.get_fdata(dtype=np.float32)   # or use .dataobj to avoid load
+    pad_width = tuple((p, p) for p in pad)   # [(−x,+x), (−y,+y), (−z,+z)]
+    data_padded = np.pad(data, pad_width, mode="constant", constant_values=0)
+
+    # 2. Update affine: shift origin by (−pad_x, −pad_y, −pad_z) voxels
+    aff = img.affine.copy()
+    translation_vox = -np.array(pad)
+    aff[:3, 3] += aff[:3, :3] @ translation_vox   # same as voxel→world shift
+
+    # 3. Build new header (copy keeps intent, pixdim, etc.)
+    hdr = img.header.copy()
+    hdr.set_data_shape(data_padded.shape)
+
+    return nib.Nifti1Image(data_padded, aff, hdr)
