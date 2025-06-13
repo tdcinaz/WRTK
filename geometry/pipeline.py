@@ -4,11 +4,14 @@ import os
 from os.path import join
 import logging
 import pyvista as pv
+import pymeshfix
 from geometry_master import (
     compute_label_volumes,
     nifti_to_pv_image_data,
     extract_labeled_surface_from_volume,
-    extract_individual_surfaces
+    extract_individual_surfaces,
+    merge_coincident_points_on_boundary,
+    remesh
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -51,10 +54,34 @@ def pipeline(
 
     repaired_polydata = extract_individual_surfaces(labeled_polydata)
 
+    repaired_polydata.smooth()
+
     repaired_polydata.plot(scalars='BoundaryLabels')
+
+    merged_polydata = merge_coincident_points_on_boundary(repaired_polydata)
+
+    meshfix = pymeshfix.MeshFix(merged_polydata)
+    meshfix.repair(verbose=True)
+    fixed_polydata = meshfix.mesh
+
+    fixed_polydata.subdivide(2)
+
+    fixed_polydata.plot()
     
+    remeshed_polydata = remesh(fixed_polydata)
+
+    remeshed_polydata.smooth
+
+    remeshed_polydata.plot()
+
+    meshfix = pymeshfix.MeshFix(remeshed_polydata)
+    meshfix.repair(verbose=True)
+    filled_surface = meshfix.mesh
+    
+    filled_surface.plot()
+
     surface_file = join(patient_output_path, f"{prefix}_{patient_ID}_surface.vtp")
 
-    repaired_polydata.save(surface_file)
+    filled_surface.save(surface_file)
 
     logging.info(f"Surface extracted and saved to '{surface_file}'")

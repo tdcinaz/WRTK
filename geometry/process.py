@@ -37,7 +37,8 @@ def parse_arguments() -> argparse.Namespace:
     return args
 
 def main():
-    args = parse_arguments
+    args = parse_arguments()
+    logging.info(f"Patient ID: {args.patient_ID}")
     pipeline(args, prefix="topcow")
     
 

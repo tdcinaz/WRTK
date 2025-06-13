@@ -449,3 +449,150 @@ def extract_individual_surfaces(
 
     #return pv.wrap(cleaner.GetOutput())
     return pv.wrap(completeAppender.GetOutput())
+
+
+def merge_coincident_points_on_boundary(poly_data):
+    """
+    Merge exactly coincident points in poly_data only if at least one 
+    of the points being merged is on a boundary edge.
+
+    Parameters
+    ----------
+    poly_data : vtk.vtkPolyData
+        Input surface mesh.
+    
+    Returns
+    -------
+    vtk.vtkPolyData
+        A new vtkPolyData with boundary points merged according 
+        to the rule above.
+    """
+
+    boundary_labels_array = poly_data.GetPointData().GetArray("BoundaryLabels")
+    if boundary_labels_array is None:
+        raise ValueError("No 'BoundaryLabels' array found in point data.")
+
+    # --- 1) Group points by their exact 3D coordinates ---
+    import numpy as np
+    num_pts = poly_data.GetNumberOfPoints()
+    coords = [poly_data.GetPoint(i) for i in range(num_pts)]
+
+    # Dictionary keyed by (x, y, z) -> list of old point IDs
+    from collections import defaultdict
+    coord_map = defaultdict(list)
+    for old_id, xyz in enumerate(coords):
+        # Round to a reasonable decimal if you want to guard against floating noise
+        # This is optional, for strictly identical merges you can skip rounding.
+        key = tuple(np.round(xyz, 7))  
+        coord_map[key].append(old_id)
+
+    # --- 2) Identify boundary edges and boundary points ---
+    feature_edges = vtk.vtkFeatureEdges()
+    feature_edges.SetInputData(poly_data)
+    # We only want open boundary edges of the mesh
+    feature_edges.BoundaryEdgesOn()
+    feature_edges.FeatureEdgesOff()
+    feature_edges.ManifoldEdgesOff()
+    feature_edges.NonManifoldEdgesOff()
+    feature_edges.Update()
+
+    boundary_edges = feature_edges.GetOutput()
+
+    boundary_point_ids = set()
+    for cell_id in range(boundary_edges.GetNumberOfCells()):
+        cell = boundary_edges.GetCell(cell_id)
+        points = cell.GetPoints()
+        for pid_idx in range(cell.GetNumberOfPoints()):
+            point = tuple(np.round(points.GetPoint(pid_idx), 7))
+            pt_id = coord_map[point][0]
+            boundary_point_ids.add(pt_id)
+
+    print("Number of boundary point ids:", len(boundary_point_ids))
+
+    # --- 3) Within each group, merge only if there's a boundary point ---
+    old_id_to_new_id = [-1] * num_pts
+    new_points = []
+    current_new_id = 0
+
+    coincident_points = 0
+    merge_points = 0
+
+    out_label_array = vtk.vtkIntArray()
+    out_label_array.SetName("BoundaryLabels")
+    out_label_array.SetNumberOfComponents(1)
+
+    for xyz_key, same_coord_ids in coord_map.items():
+        if len(same_coord_ids) > 1:
+            coincident_points += 1
+            #print(same_coord_ids)
+        # Check if this group has at least one boundary point
+        group_has_boundary = any((pid in boundary_point_ids) for pid in same_coord_ids)
+
+        if group_has_boundary:
+            #boundary_pid = same_coord_ids[0]
+            boundary_pid = min(pid for pid in same_coord_ids if pid in boundary_point_ids)
+            chosen_label = boundary_labels_array.GetValue(boundary_pid)
+            merge_points += 1
+            # Merge them all into a single point
+            merged_new_id = current_new_id
+            current_new_id += 1
+            new_points.append(xyz_key)
+            out_label_array.InsertValue(merged_new_id, chosen_label)
+            for old_pid in same_coord_ids:
+                old_id_to_new_id[old_pid] = merged_new_id
+        else:
+            # No boundary point: each stays distinct
+            for old_pid in same_coord_ids:
+                chosen_label = boundary_labels_array.GetValue(old_pid)
+                new_points.append(xyz_key)
+                old_id_to_new_id[old_pid] = current_new_id
+                out_label_array.InsertValue(current_new_id, chosen_label)
+                current_new_id += 1
+
+    print("Coincident points:", coincident_points)
+    print("Merge points:", merge_points)
+
+    out_label_array.SetNumberOfTuples(current_new_id)
+
+    # --- 4) Build the output vtkPolyData with updated point IDs ---
+    out_poly_data = vtk.vtkPolyData()
+
+    # Create the new vtkPoints
+    vtk_new_points = vtk.vtkPoints()
+    vtk_new_points.SetNumberOfPoints(len(new_points))
+    for i, xyz_key in enumerate(new_points):
+        vtk_new_points.SetPoint(i, xyz_key)
+    out_poly_data.SetPoints(vtk_new_points)
+
+    # We will copy polygons (and optionally strips, lines, etc.).
+    # For a surface mesh with polys:
+    in_polys = poly_data.GetPolys()
+    in_polys.InitTraversal()
+
+    out_polys = vtk.vtkCellArray()
+
+    for cell_id in range(poly_data.GetNumberOfCells()):
+        cell = poly_data.GetCell(cell_id)
+        npts = cell.GetNumberOfPoints()
+        out_polys.InsertNextCell(npts)
+        for j in range(npts):
+            old_pid = cell.GetPointId(j)
+            out_polys.InsertCellPoint(old_id_to_new_id[old_pid])
+
+    out_poly_data.SetPolys(out_polys)
+
+    #out_poly_data.GetPointData().AddArray(out_label_array)
+
+    # Optionally copy cell data, point data, etc., if needed:
+    #out_poly_data.GetPointData().ShallowCopy(poly_data.GetPointData())
+    out_poly_data.GetCellData().ShallowCopy(poly_data.GetCellData())
+
+    return pv.wrap(out_poly_data)
+
+
+def remesh(polydata):
+
+    clus = pyacvd.Clustering(polydata)
+    # mesh is not dense enough for uniform remeshing
+    clus.cluster(20000)
+    return clus.create_mesh()
