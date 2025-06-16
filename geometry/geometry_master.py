@@ -10,6 +10,8 @@ from collections import defaultdict, deque
 from scipy.spatial import cKDTree
 import os
 import re
+from skimage.morphology import skeletonize
+from scipy.ndimage import distance_transform_edt
 
 def nifti_to_pv_image_data(nifti_img):
     """
@@ -44,7 +46,7 @@ def nifti_to_pv_image_data(nifti_img):
     
     pv_image.point_data["Scalars"] = data_array.flatten()
 
-    return pv_image
+    return pv_image, data_array
 
 def compute_label_volumes(img, label_range=range(1, 14)):
     # Load the image
@@ -97,7 +99,30 @@ def extract_labeled_surface_from_volume(
 
     return pv_surface_net
 
+def compute_skeleton(nifti_img: nib.Nifti1Image):
+    data_array = nifti_img.get_fdata()
+    affine = nifti_img.affine
+    voxel_spacing = nifti_img.header.get_zooms()
 
+    distance_map = distance_transform_edt(data_array, sampling=voxel_spacing)
+
+    skeleton = skeletonize(data_array)
+    if not np.any(skeleton):
+        print("  Skeletonization failed.")
+        return
+    
+    radii_mm = distance_map[skeleton > 0]
+    labels = data_array[skeleton > 0]
+    zyx_coords = np.array(np.where(skeleton > 0)).T
+
+    homogeneous_coords = np.c_[zyx_coords[:, ::-1], np.ones(len(zyx_coords))]  # (x, y, z, 1)
+    world_coords = (affine @ homogeneous_coords.T).T[:, :3]
+
+    pv_skeleton = pv.PolyData(world_coords)
+    pv_skeleton.point_data["Radius"] = radii_mm.flatten()
+    pv_skeleton.point_data["Artery"] = labels.flatten()
+
+    return pv_skeleton
 
 def extract_individual_surfaces(
     labeledSurface,
