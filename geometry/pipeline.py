@@ -9,6 +9,8 @@ from geometry_master import (
     compute_label_volumes,
     nifti_to_pv_image_data,
     compute_skeleton,
+    extract_start_and_end_voxels,
+    spline_interpolation,
     extract_labeled_surface_from_volume,
     extract_individual_surfaces,
     merge_coincident_points_on_boundary,
@@ -46,10 +48,16 @@ def pipeline(
     volume_dict = compute_label_volumes(nifti_img)
     logging.info(f"++++ : Volume for each label: {volume_dict}")
 
-    #pv_image, image_data_array = nifti_to_pv_image_data(nifti_img)
+    pv_image = nifti_to_pv_image_data(nifti_img)
+    #pv_image.plot(scalars="Scalars", volume=True)
+
     #logging.info(f"++++ : Image {prefix}_{patient_ID} loaded")
 
     skeleton: pv.PolyData = compute_skeleton(nifti_img)
+
+    extract_start_and_end_voxels(nifti_img, pv_image, skeleton)
+
+    spline_interpolation(skeleton)
 
     skeleton_file = join(patient_output_path, f"{prefix}_{patient_ID}_skeleton.vtp")
 
