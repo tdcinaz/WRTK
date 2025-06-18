@@ -10,6 +10,13 @@ from collections import defaultdict, deque
 from scipy.spatial import cKDTree
 import os
 import re
+from skimage.morphology import skeletonize
+from scipy.ndimage import distance_transform_edt
+from scipy.interpolate import splprep, splev, make_splprep
+from scipy.spatial import cKDTree
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import minimum_spanning_tree, dijkstra
+import networkx as nx
 
 def nifti_to_pv_image_data(nifti_img):
     """
@@ -62,6 +69,257 @@ def compute_label_volumes(img, label_range=range(1, 14)):
 
     return volumes
 
+
+def compute_skeleton(nifti_img: nib.Nifti1Image):
+    data_array = nifti_img.get_fdata()
+    affine = nifti_img.affine
+    voxel_spacing = nifti_img.header.get_zooms()
+
+    new_data_array = np.repeat(np.repeat(np.repeat(data_array, 2, axis=0), 2, axis=1), 2, axis=2)
+    new_affine = nifti_img.affine.copy()
+    new_hdr = nifti_img.header.copy()
+
+    new_affine[:3, :3] /= 2.0
+    new_hdr.set_zooms(tuple(z/2 for z in voxel_spacing[:3]) + voxel_spacing[3:])
+    new_voxel_spacing = new_hdr.get_zooms()
+
+    distance_map = distance_transform_edt(new_data_array, sampling=new_voxel_spacing)
+    #distance_map = distance_transform_edt(data_array, sampling=voxel_spacing)
+
+
+    skeleton = skeletonize(new_data_array)
+    if not np.any(skeleton):
+        print("  Skeletonization failed.")
+        return
+    
+    radii_mm = distance_map[skeleton > 0]
+    labels = new_data_array[skeleton > 0]
+    zyx_coords = np.array(np.where(skeleton > 0)).T
+
+    homogeneous_coords = np.c_[zyx_coords[:, ::-1], np.ones(len(zyx_coords))]  # (x, y, z, 1)
+    world_coords = (new_affine @ homogeneous_coords.T).T[:, :3]
+
+    pv_skeleton = pv.PolyData(world_coords)
+    pv_skeleton.point_data["Radius"] = radii_mm.flatten()
+    pv_skeleton.point_data["Artery"] = labels.flatten()
+
+    return pv_skeleton
+
+def extract_start_and_end_voxels(nifti_img: nib.Nifti1Image, pv_image: pv.ImageData, skeleton: pv.PolyData):
+    
+
+    surface_net = extract_labeled_surface_from_volume(pv_image)
+
+    standardAdj = {
+        1.0: (2.0, 3.0),            # Bas -> L-PCA, R-PCA
+        2.0: (1.0, 8.0),            # L-PCA -> Bas, L-Pcom
+        3.0: (1.0, 9.0),            # R-PCA -> Bas, R-Pcom
+        4.0: (5.0, 8.0, 11.0),      # L-ICA -> L-MCA, L-Pcom, L-ACA
+        5.0: (4.0,),                # L-MCA -> L-ICA
+        6.0: (7.0, 9.0, 12.0),      # R-ICA -> R-MCA, R-Pcom, R-ACA
+        7.0: (6.0,),                # R-MCA -> R-ICA
+        8.0: (2.0, 4.0),            # L-Pcom -> L-PCA, L-ICA
+        9.0: (3.0, 6.0),            # R-Pcom -> R-PCA, R-ICA
+        10.0: (11.0, 12.0),         # Acom -> L-ACA, R-ACA
+        11.0: (4.0,),               # L-ACA -> L-ICA
+        12.0: (6.0,)                # R-ACA -> R-ICA
+    }
+
+    data_array = nifti_img.get_fdata()
+    unique_labels = np.unique(data_array)
+
+    if 0 in unique_labels:
+        unique_labels = np.delete(unique_labels, 0)
+
+    boundaries = []
+    tuples = surface_net.cell_data['BoundaryLabels']
+    
+    # Extract vessel bifurfaction boundary cells from surface.
+    # Find barycenters of boundaries
+    
+    all_barycenters = {}
+
+    for label1 in unique_labels:
+        for label2 in standardAdj[label1]:
+            label_mask1 = (tuples == label1).any(axis=1)
+            label_mask2 = (tuples == label2).any(axis=1)
+            label_mask = label_mask1 & label_mask2
+
+            label_cell_ids = np.nonzero(label_mask)[0]
+
+            centers = surface_net.cell_centers().points[label_cell_ids]  # cell centers for matches
+            barycenter = centers.mean(axis=0)                       # (x, y, z)
+
+            
+            barycenter_key = f"{label1}/{label2}"
+
+            #if f"{label2}/{label1}" not in all_barycenters.keys():
+            all_barycenters[barycenter_key] = barycenter
+
+    # Find nearest point to boundary center point for each artery in skeleton
+    boundary_points = {}
+    arteries = skeleton.point_data['Artery']
+    for key in all_barycenters.keys():
+        label = float(key[0:3])
+        artery = (arteries == label)
+        artery_point_ids = np.nonzero(artery)[0]
+        artery_points = skeleton.extract_points(artery_point_ids)
+        closest_idx = np.argmin(np.linalg.norm(artery_points.points - all_barycenters[key], axis=1))
+
+        #boundary_points[key] = artery_points.points[closest_idx]
+        boundary_points[key] = skeleton.FindPoint(artery_points.points[closest_idx])
+
+    skeleton_points = skeleton.points
+    skeleton_labels = np.zeros(skeleton_points.shape[0])
+
+    for idxPoints in boundary_points.values():
+        skeleton_labels[idxPoints] = 1
+
+    skeleton.point_data['CenterlineLabels'] = skeleton_labels
+
+def spline_interpolation(
+    poly: pv.PolyData,
+):
+    # ---------------- 0. your artery PolyData is already in `poly` --------------
+    artery_lbl   = poly["Artery"]              #   point-data array (float)
+    cent_lbl     = poly["CenterlineLabels"]    #   point-data array (float)
+    radius       = poly["Radius"]              #   local inscribed-sphere radius
+
+    network = pv.PolyData()
+    print(network)
+
+    unique_labels = np.unique(artery_lbl)
+    for label in unique_labels:
+        # -------- 1. isolate the artery-of-interest ------------------
+        keep_mask    = artery_lbl == label
+        idx_subset   = np.flatnonzero(keep_mask)
+
+        pts_subset   = poly.points[idx_subset]     # (M,3) points on this artery
+        cent_subset  = cent_lbl[idx_subset]        # matching centreline labels
+        rad_subset   = radius[idx_subset]          # matching radii
+
+        ordered_local = order_artery_points(pts_subset, cent_subset, k=6)
+        ordered_global = idx_subset[ordered_local]     # indices w.r.t. the *full* PolyData
+
+        # -------- 2. locate the (single) start point (CentrelineLabels == 1.0) ------
+        #start_local  = np.flatnonzero(cent_subset == 1.0)[0]           # index in subset
+        #pts_reordered = np.vstack((pts_subset[start_local+1:],
+        #                        pts_subset[:start_local]))
+        #rad_reordered = np.hstack((rad_subset[start_local+1:],
+        #                        rad_subset[:start_local]))
+        pts_reordered = pts_subset[ordered_local]
+        rad_reordered = rad_subset[ordered_local]
+
+        # -------- 3. chord-length parameterisation ----------------------------------
+        seg_len   = np.linalg.norm(np.diff(pts_reordered, axis=0), axis=1)
+        u         = np.hstack(([0.0], np.cumsum(seg_len)))
+        u        /= u[-1]                                            # scale → [0,1]
+
+        # -------- 4. build weights from the radius values ---------------------------
+        #   bigger radius  ⇒  bigger weight  ⇒  curve more faithful to that point
+        #w         = rad_reordered / rad_reordered.max()              # normalise to [0,1]
+        w = 0.0 + (rad_reordered - rad_reordered.min()) * (0.8 - 0.0) / (rad_reordered.max() - rad_reordered.min())
+
+        # -------- 5. fit a **smoothing** spline (s>0) with those weights ------------
+        k         = min(3, len(pts_reordered) - 1)                   # spline degree
+        # heuristic: allow ≈1% average positional deviation
+        s_factor  = 0.01 * np.mean(seg_len) * len(pts_reordered)
+
+        tck, _    = make_splprep(pts_reordered.T, u=u, w=w, k=k, s=s_factor)
+
+        # -------- 6. sample the spline densely to obtain the smooth centreline ------
+        n_samples = 200
+        u_fine    = np.linspace(0.0, 1.0, n_samples)
+        x_f, y_f, z_f = tck.__call__(u_fine)
+        smooth_pts = np.column_stack((x_f, y_f, z_f))
+
+        # convert to a PyVista poly-line
+        cells   = np.hstack(([n_samples], np.arange(n_samples))).astype(np.int64)
+        centerline_smooth = pv.PolyData(smooth_pts, lines=cells)
+
+        #print(centerline_smooth)
+        network.merge(centerline_smooth, inplace=True)
+
+    #print(network)
+    # -------- 7. quick visual sanity-check (optional) ---------------------------
+    p = pv.Plotter()
+    p.add_mesh(poly, render_points_as_spheres=True, point_size=5, color="lightgray")
+    p.add_mesh(network, color="dodgerblue", line_width=4,
+            label="Weighted smoothing spline")
+    p.add_legend()
+    p.show()
+
+
+def order_artery_points(points: np.ndarray,
+                        centerline_labels: np.ndarray,
+                        k: int = 6) -> np.ndarray:
+    """
+    Return indices that reorder `points` so they follow the artery’s centre path.
+
+    Parameters
+    ----------
+    points : (N, 3) ndarray
+        3-D coordinates for one artery.
+    centerline_labels : (N,) ndarray
+        Array where exactly one entry == 1.0 marks the start point.
+    k : int
+        How many nearest neighbours to connect in the initial graph.
+
+    Returns
+    -------
+    order : (M,) ndarray
+        Indices into `points` giving the centreline sequence (M==N).
+    """
+    # --- 1. build k-NN graph -------------------------------------------------
+    tree   = cKDTree(points)
+    dists, nbrs = tree.query(points, k=k+1)       # self + k neighbours
+    row_idx = np.repeat(np.arange(len(points)), k)  # source vertices
+    col_idx = nbrs[:, 1:].ravel()                  #  skip self (col 0)
+    data    = dists[:, 1:].ravel()
+
+    W = csr_matrix((data, (row_idx, col_idx)), shape=(len(points),)*2)
+    W = W.maximum(W.T)                             # make symmetric
+
+    # --- 2. minimum spanning tree for single-path backbone -------------------
+    mst = minimum_spanning_tree(W)                # SciPy returns CSR matrix
+    mst = mst + mst.T                             # make dense-undirected format
+
+    # --- 3. find start + farthest leaf on the MST ----------------------------
+    start_idx = int(np.flatnonzero(centerline_labels == 1.0)[0])
+
+    # use Dijkstra to get all pairwise geodesic distances from start on MST
+    dist_from_start, predecessors = dijkstra(mst, directed=False,
+                                             indices=start_idx,
+                                             return_predecessors=True)
+    far_idx = int(dist_from_start.argmax())        # leaf with greatest length
+
+    # --- 4. extract path from start → far_idx --------------------------------
+    order = []
+    cur = far_idx
+    while cur != start_idx:
+        order.append(cur)
+        cur = predecessors[cur]
+    order.append(start_idx)
+    order.reverse()                               # now goes start → far leaf
+
+    # `order` may omit interior branches if MST branched; fix by DFS traversal
+    visited = set(order)
+    stack   = [start_idx]
+    G = nx.from_scipy_sparse_array(mst, edge_attribute="weight")
+
+    while stack:
+        node = stack.pop()
+        for nbr in G.neighbors(node):
+            if nbr not in visited:
+                # depth-first walk to cover remaining nodes
+                visited.add(nbr)
+                insert_pos = order.index(node) + 1
+                order.insert(insert_pos, nbr)
+                stack.append(nbr)
+
+    return np.array(order, dtype=int)
+
+
 def extract_labeled_surface_from_volume(
     input_vtk_image: pv.ImageData,
 ) -> pv.PolyData:
@@ -96,7 +354,6 @@ def extract_labeled_surface_from_volume(
     logging.info(f"    ++++ : Cells after cleaning: {pv_surface_net.GetNumberOfCells()}")
 
     return pv_surface_net
-
 
 
 def extract_individual_surfaces(
