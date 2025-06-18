@@ -392,10 +392,9 @@ def order_artery_points(points: np.ndarray,
 
     return centerlines
 
-def extract_angles(splines, in_file):
+def extract_angles(splines, points):
     
-    #extract mesh from vtp file
-    points = pv.wrap(in_file)
+
 
     #indices of all end points
     end_pts = [point for point in points.point_data if point["CenterlineLabels"] == 1] #not sure what the label is
@@ -446,7 +445,7 @@ def extract_angles(splines, in_file):
         vessel1 = pair[0]
         vessel2 = pair[1]
         #if a vessel is missing then skip
-        if vessel1 not in splines.keys() or vessel2 not in splines.keys():
+        if f"{vessel1}:{vessel2}" not in splines.keys() or f"{vessel2}:{vessel1}" not in splines.keys():
             continue
         
         #find end points of vessels
