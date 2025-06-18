@@ -7,27 +7,43 @@ import nibabel as nib
 from pyvista import examples
 import sys
 
-path = "tests/input/topcow/labelsTr/topcow_ct_001.nii.gz"
+standardAdj = {
+        1.0: (2.0, 3.0),
+        2.0: (1.0, 8.0),
+        3.0: (1.0, 9.0),
+        4.0: (5.0, 8.0, 11.0),
+        5.0: (4.0,),
+        6.0: (7.0, 9.0, 12.0),
+        7.0: (6.0,),
+        8.0: (2.0, 4.0),
+        9.0: (3.0, 6.0),
+        10.0: (11.0, 12.0),
+        11.0: (4.0,),
+        12.0: (6.0,)
+    }
 
-img = nib.load(path)
-image_data = img.get_fdata()
-integer_labels = image_data.astype(int)
+vessel_labels = {
+        1.0: "Basillar",
+        2.0: "L-PCA",
+        3.0: "R-PCA",
+        4.0: "L-ICA",
+        5.0: "L-MCA",
+        6.0: "R-ICA",
+        7.0: "R-MCA",
+        8.0: "L-Pcom",
+        9.0: "R-Pcom",
+        10.0: "Acom",
+        11.0: "L-ACA",
+        12.0: "R-ACA",
+}
 
-reader = pv.get_reader(path)
+angle_pairs = []
 
-mesh = reader.read()
+for key in standardAdj.keys():
+    for vessel in standardAdj[key]:
+        pair = [key, vessel]
+        if [vessel, key] not in angle_pairs:
+            angle_pairs.append(pair)
 
-#mesh.plot(scalars = integer_labels)
-
-thresholded_mesh = mesh.threshold(1)
-scalar_values = pv.wrap(integer_labels)
-scalar_values_thresholded = scalar_values.threshold(1)
-
-thresholded_mesh.plot(scalars=scalar_values_thresholded)
-
-#print(mesh.GetCellData())
-#print(mesh.GetPointData())
-
-#transformed_mesh = mesh.threshold(1)
-
-#transformed_mesh.plot(scalars=integer_labels)
+angles = {}
+count = 0
