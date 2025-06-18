@@ -52,7 +52,7 @@ def pipeline(
 
     skeleton: pv.PolyData = compute_skeleton(nifti_img)
 
-    extract_start_and_end_voxels(nifti_img, pv_image, skeleton)
+    connection_barycenters = extract_start_and_end_voxels(nifti_img, pv_image, skeleton)
 
     spline_dict = spline_interpolation(skeleton)
 

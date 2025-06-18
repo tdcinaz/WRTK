@@ -176,6 +176,8 @@ def extract_start_and_end_voxels(nifti_img: nib.Nifti1Image, pv_image: pv.ImageD
 
     skeleton.point_data['CenterlineLabels'] = skeleton_labels
 
+    return all_barycenters
+
 def spline_interpolation(
     poly: pv.PolyData,
 ):
@@ -204,12 +206,6 @@ def spline_interpolation(
             ordered_local = ordered_local_list[idx]
             ordered_global = idx_subset[ordered_local]     # indices w.r.t. the *full* PolyData
 
-            # -------- 2. locate the (single) start point (CentrelineLabels == 1.0) ------
-            #start_local  = np.flatnonzero(cent_subset == 1.0)[0]           # index in subset
-            #pts_reordered = np.vstack((pts_subset[start_local+1:],
-            #                        pts_subset[:start_local]))
-            #rad_reordered = np.hstack((rad_subset[start_local+1:],
-            #                        rad_subset[:start_local]))
             pts_reordered = pts_subset[ordered_local]
             rad_reordered = rad_subset[ordered_local]
 
@@ -229,26 +225,6 @@ def spline_interpolation(
             w = w_min + (rad_reordered - rad_reordered.min()) * (w_max - w_min) / (rad_reordered.max() - rad_reordered.min())
 
             path_dict[f"{label}:{target_label}"] = (pts_reordered, w)
-
-            ## -------- 5. fit a **smoothing** spline (s>0) with those weights ------------
-            #k         = min(3, len(pts_reordered) - 1)                   # spline degree
-            ## heuristic: allow ≈1% average positional deviation
-            #s_factor  = 0.01 * np.mean(seg_len) * len(pts_reordered)
-
-            #tck, _    = make_splprep(pts_reordered.T, u=u, w=w, k=k, s=s_factor)
-
-            ## -------- 6. sample the spline densely to obtain the smooth centreline ------
-            #n_samples = 200
-            #u_fine    = np.linspace(0.0, 1.0, n_samples)
-            #x_f, y_f, z_f = tck.__call__(u_fine)
-            #smooth_pts = np.column_stack((x_f, y_f, z_f))
-
-            ## convert to a PyVista poly-line
-            #cells   = np.hstack(([n_samples], np.arange(n_samples))).astype(np.int64)
-            #centerline_smooth = pv.PolyData(smooth_pts, lines=cells)
-
-            #network.merge(centerline_smooth, inplace=True)
-            #spline_dict[f"{label}:{target_label}"] = tck
 
     standardAdj = {
         1.0: (2.0, 3.0),            # Bas -> L-PCA, R-PCA
