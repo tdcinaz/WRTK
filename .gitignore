@@ -5,4 +5,5 @@ normalization/__pycache__
 normalization/__pycache__/
 training/imagesTr/
 training/labelsTr/
-geometry/__pycache__/pipeline.cpython-311.pyc
+geometry/__pycache__/
+

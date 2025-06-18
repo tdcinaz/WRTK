@@ -186,7 +186,6 @@ def spline_interpolation(
     radius       = poly["Radius"]              #   local inscribed-sphere radius
 
     network = pv.PolyData()
-    print(network)
 
     unique_labels = np.unique(artery_lbl)
     for label in unique_labels:
@@ -198,49 +197,54 @@ def spline_interpolation(
         cent_subset  = cent_lbl[idx_subset]        # matching centreline labels
         rad_subset   = radius[idx_subset]          # matching radii
 
-        ordered_local = order_artery_points(pts_subset, cent_subset, k=6)
-        ordered_global = idx_subset[ordered_local]     # indices w.r.t. the *full* PolyData
+        ordered_local_list = order_artery_points(pts_subset, cent_subset, k=6)
+        spline_dict = {}
 
-        # -------- 2. locate the (single) start point (CentrelineLabels == 1.0) ------
-        #start_local  = np.flatnonzero(cent_subset == 1.0)[0]           # index in subset
-        #pts_reordered = np.vstack((pts_subset[start_local+1:],
-        #                        pts_subset[:start_local]))
-        #rad_reordered = np.hstack((rad_subset[start_local+1:],
-        #                        rad_subset[:start_local]))
-        pts_reordered = pts_subset[ordered_local]
-        rad_reordered = rad_subset[ordered_local]
+        for idx in range(len(np.flatnonzero(cent_subset == 1.0))):
+            ordered_local = ordered_local_list[idx]
+            ordered_global = idx_subset[ordered_local]     # indices w.r.t. the *full* PolyData
 
-        # -------- 3. chord-length parameterisation ----------------------------------
-        seg_len   = np.linalg.norm(np.diff(pts_reordered, axis=0), axis=1)
-        u         = np.hstack(([0.0], np.cumsum(seg_len)))
-        u        /= u[-1]                                            # scale → [0,1]
+            # -------- 2. locate the (single) start point (CentrelineLabels == 1.0) ------
+            #start_local  = np.flatnonzero(cent_subset == 1.0)[0]           # index in subset
+            #pts_reordered = np.vstack((pts_subset[start_local+1:],
+            #                        pts_subset[:start_local]))
+            #rad_reordered = np.hstack((rad_subset[start_local+1:],
+            #                        rad_subset[:start_local]))
+            pts_reordered = pts_subset[ordered_local]
+            rad_reordered = rad_subset[ordered_local]
 
-        # -------- 4. build weights from the radius values ---------------------------
-        #   bigger radius  ⇒  bigger weight  ⇒  curve more faithful to that point
-        #w         = rad_reordered / rad_reordered.max()              # normalise to [0,1]
-        w = 0.0 + (rad_reordered - rad_reordered.min()) * (0.8 - 0.0) / (rad_reordered.max() - rad_reordered.min())
+            target_label = nearest_other_start_artery(pts_reordered[0], poly)
 
-        # -------- 5. fit a **smoothing** spline (s>0) with those weights ------------
-        k         = min(3, len(pts_reordered) - 1)                   # spline degree
-        # heuristic: allow ≈1% average positional deviation
-        s_factor  = 0.01 * np.mean(seg_len) * len(pts_reordered)
+            # -------- 3. chord-length parameterisation ----------------------------------
+            seg_len   = np.linalg.norm(np.diff(pts_reordered, axis=0), axis=1)
+            u         = np.hstack(([0.0], np.cumsum(seg_len)))
+            u        /= u[-1]                                            # scale → [0,1]
 
-        tck, _    = make_splprep(pts_reordered.T, u=u, w=w, k=k, s=s_factor)
+            # -------- 4. build weights from the radius values ---------------------------
+            #   bigger radius  ⇒  bigger weight  ⇒  curve more faithful to that point
+            #w         = rad_reordered / rad_reordered.max()              # normalise to [0,1]
+            w = 0.0 + (rad_reordered - rad_reordered.min()) * (0.6 - 0.0) / (rad_reordered.max() - rad_reordered.min())
 
-        # -------- 6. sample the spline densely to obtain the smooth centreline ------
-        n_samples = 200
-        u_fine    = np.linspace(0.0, 1.0, n_samples)
-        x_f, y_f, z_f = tck.__call__(u_fine)
-        smooth_pts = np.column_stack((x_f, y_f, z_f))
+            # -------- 5. fit a **smoothing** spline (s>0) with those weights ------------
+            k         = min(3, len(pts_reordered) - 1)                   # spline degree
+            # heuristic: allow ≈1% average positional deviation
+            s_factor  = 0.01 * np.mean(seg_len) * len(pts_reordered)
 
-        # convert to a PyVista poly-line
-        cells   = np.hstack(([n_samples], np.arange(n_samples))).astype(np.int64)
-        centerline_smooth = pv.PolyData(smooth_pts, lines=cells)
+            tck, _    = make_splprep(pts_reordered.T, u=u, w=w, k=k, s=s_factor)
 
-        #print(centerline_smooth)
-        network.merge(centerline_smooth, inplace=True)
+            # -------- 6. sample the spline densely to obtain the smooth centreline ------
+            n_samples = 200
+            u_fine    = np.linspace(0.0, 1.0, n_samples)
+            x_f, y_f, z_f = tck.__call__(u_fine)
+            smooth_pts = np.column_stack((x_f, y_f, z_f))
 
-    #print(network)
+            # convert to a PyVista poly-line
+            cells   = np.hstack(([n_samples], np.arange(n_samples))).astype(np.int64)
+            centerline_smooth = pv.PolyData(smooth_pts, lines=cells)
+
+            network.merge(centerline_smooth, inplace=True)
+            spline_dict[f"{label}:{target_label}"] = tck
+
     # -------- 7. quick visual sanity-check (optional) ---------------------------
     p = pv.Plotter()
     p.add_mesh(poly, render_points_as_spheres=True, point_size=5, color="lightgray")
@@ -249,10 +253,73 @@ def spline_interpolation(
     p.add_legend()
     p.show()
 
+    return spline_dict
+
+def nearest_other_start_artery(start_xyz: np.ndarray,
+                               mesh: pv.PolyData,
+                               tol: float = 1e-6) -> float:
+    """
+    Find the Artery label of the nearest start point belonging to
+    a *different* artery.
+
+    Parameters
+    ----------
+    start_xyz : (3,) array-like
+        Coordinates of the start point.
+    mesh : pyvista.PolyData
+        Must contain point data arrays 'Artery' and 'CenterlineLabels'.
+    tol : float, optional
+        Tolerance when matching `start_xyz` to an existing start point.
+
+    Returns
+    -------
+    float
+        Artery label of the closest start point with a different artery.
+
+    Raises
+    ------
+    ValueError
+        If no matching start point is found, or if no other start points
+        with a different artery exist.
+    """
+    # Grab the point-data arrays as NumPy for speed
+    starts   = np.asarray(mesh['CenterlineLabels'])   # 0.0 (normal) | 1.0 (start)
+    arteries = np.asarray(mesh['Artery'])             # 1.0 … 13.0
+
+    # Indices of every “start” point in the mesh
+    start_idx = np.where(starts == 1.0)[0]
+    if start_idx.size == 0:
+        raise ValueError("Mesh contains no start points (CenterlineLabels == 1.0).")
+
+    start_pts = mesh.points[start_idx]
+
+    # Locate which of those start points matches the supplied coordinates
+    dists_in  = np.linalg.norm(start_pts - start_xyz, axis=1)
+    match     = dists_in < tol
+    if not np.any(match):
+        raise ValueError(f"Provided coordinates don’t match any start point (tol={tol}).")
+
+    this_idx_in_start = np.flatnonzero(match)[0]        # first match within tol
+    this_mesh_idx     = start_idx[this_idx_in_start]
+    this_artery       = arteries[this_mesh_idx]
+
+    # Filter to *other* arteries only
+    other_mask   = arteries[start_idx] != this_artery
+    if not np.any(other_mask):
+        raise ValueError("No other start points with a different Artery label found.")
+
+    other_pts    = start_pts[other_mask]
+    other_labels = arteries[start_idx][other_mask]
+
+    # Euclidean distances to those other start points
+    dists_out = np.linalg.norm(other_pts - start_xyz, axis=1)
+    nearest_i = np.argmin(dists_out)
+
+    return float(other_labels[nearest_i])
 
 def order_artery_points(points: np.ndarray,
                         centerline_labels: np.ndarray,
-                        k: int = 6) -> np.ndarray:
+                        k: int = 6):
     """
     Return indices that reorder `points` so they follow the artery’s centre path.
 
@@ -284,40 +351,46 @@ def order_artery_points(points: np.ndarray,
     mst = minimum_spanning_tree(W)                # SciPy returns CSR matrix
     mst = mst + mst.T                             # make dense-undirected format
 
-    # --- 3. find start + farthest leaf on the MST ----------------------------
-    start_idx = int(np.flatnonzero(centerline_labels == 1.0)[0])
+    centerlines = []
 
-    # use Dijkstra to get all pairwise geodesic distances from start on MST
-    dist_from_start, predecessors = dijkstra(mst, directed=False,
-                                             indices=start_idx,
-                                             return_predecessors=True)
-    far_idx = int(dist_from_start.argmax())        # leaf with greatest length
+    for idx in range(len(np.flatnonzero(centerline_labels == 1.0))):
 
-    # --- 4. extract path from start → far_idx --------------------------------
-    order = []
-    cur = far_idx
-    while cur != start_idx:
-        order.append(cur)
-        cur = predecessors[cur]
-    order.append(start_idx)
-    order.reverse()                               # now goes start → far leaf
+        # --- 3. find start + farthest leaf on the MST ----------------------------
+        start_idx = int(np.flatnonzero(centerline_labels == 1.0)[idx])
 
-    # `order` may omit interior branches if MST branched; fix by DFS traversal
-    visited = set(order)
-    stack   = [start_idx]
-    G = nx.from_scipy_sparse_array(mst, edge_attribute="weight")
+        # use Dijkstra to get all pairwise geodesic distances from start on MST
+        dist_from_start, predecessors = dijkstra(mst, directed=False,
+                                                indices=start_idx,
+                                                return_predecessors=True)
+        far_idx = int(dist_from_start.argmax())        # leaf with greatest length
 
-    while stack:
-        node = stack.pop()
-        for nbr in G.neighbors(node):
-            if nbr not in visited:
-                # depth-first walk to cover remaining nodes
-                visited.add(nbr)
-                insert_pos = order.index(node) + 1
-                order.insert(insert_pos, nbr)
-                stack.append(nbr)
+        # --- 4. extract path from start → far_idx --------------------------------
+        order = []
+        cur = far_idx
+        while cur != start_idx:
+            order.append(cur)
+            cur = predecessors[cur]
+        order.append(start_idx)
+        order.reverse()                               # now goes start → far leaf
 
-    return np.array(order, dtype=int)
+        # `order` may omit interior branches if MST branched; fix by DFS traversal
+        visited = set(order)
+        stack   = [start_idx]
+        G = nx.from_scipy_sparse_array(mst, edge_attribute="weight")
+
+        while stack:
+            node = stack.pop()
+            for nbr in G.neighbors(node):
+                if nbr not in visited:
+                    # depth-first walk to cover remaining nodes
+                    visited.add(nbr)
+                    insert_pos = order.index(node) + 1
+                    order.insert(insert_pos, nbr)
+                    stack.append(nbr)
+
+        centerlines.append(np.array(order, dtype=int))
+
+    return centerlines
 
 
 def extract_labeled_surface_from_volume(
