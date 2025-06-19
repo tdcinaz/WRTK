@@ -84,7 +84,6 @@ def compute_skeleton(nifti_img: nib.Nifti1Image):
     new_voxel_spacing = new_hdr.get_zooms()
 
     distance_map = distance_transform_edt(new_data_array, sampling=new_voxel_spacing)
-    #distance_map = distance_transform_edt(data_array, sampling=voxel_spacing)
 
 
     skeleton = skeletonize(new_data_array)
@@ -177,6 +176,8 @@ def extract_start_and_end_voxels(nifti_img: nib.Nifti1Image, pv_image: pv.ImageD
 
     skeleton.point_data['CenterlineLabels'] = skeleton_labels
 
+    return all_barycenters
+
 def spline_interpolation(
     poly: pv.PolyData,
 ):
@@ -186,6 +187,8 @@ def spline_interpolation(
     radius       = poly["Radius"]              #   local inscribed-sphere radius
 
     network = pv.PolyData()
+    path_dict = {}
+    spline_dict = {}
 
     unique_labels = np.unique(artery_lbl)
     for label in unique_labels:
@@ -198,18 +201,11 @@ def spline_interpolation(
         rad_subset   = radius[idx_subset]          # matching radii
 
         ordered_local_list = order_artery_points(pts_subset, cent_subset, k=6)
-        spline_dict = {}
 
         for idx in range(len(np.flatnonzero(cent_subset == 1.0))):
             ordered_local = ordered_local_list[idx]
             ordered_global = idx_subset[ordered_local]     # indices w.r.t. the *full* PolyData
 
-            # -------- 2. locate the (single) start point (CentrelineLabels == 1.0) ------
-            #start_local  = np.flatnonzero(cent_subset == 1.0)[0]           # index in subset
-            #pts_reordered = np.vstack((pts_subset[start_local+1:],
-            #                        pts_subset[:start_local]))
-            #rad_reordered = np.hstack((rad_subset[start_local+1:],
-            #                        rad_subset[:start_local]))
             pts_reordered = pts_subset[ordered_local]
             rad_reordered = rad_subset[ordered_local]
 
@@ -223,7 +219,49 @@ def spline_interpolation(
             # -------- 4. build weights from the radius values ---------------------------
             #   bigger radius  ⇒  bigger weight  ⇒  curve more faithful to that point
             #w         = rad_reordered / rad_reordered.max()              # normalise to [0,1]
-            w = 0.0 + (rad_reordered - rad_reordered.min()) * (0.6 - 0.0) / (rad_reordered.max() - rad_reordered.min())
+            w_min = 0.1
+            w_max = 0.5
+
+            w = w_min + (rad_reordered - rad_reordered.min()) * (w_max - w_min) / (rad_reordered.max() - rad_reordered.min())
+
+            path_dict[f"{label}:{target_label}"] = (pts_reordered, w)
+
+    standardAdj = {
+        1.0: (2.0, 3.0),            # Bas -> L-PCA, R-PCA
+        2.0: (1.0, 8.0),            # L-PCA -> Bas, L-Pcom
+        3.0: (1.0, 9.0),            # R-PCA -> Bas, R-Pcom
+        4.0: (5.0, 8.0, 11.0),      # L-ICA -> L-MCA, L-Pcom, L-ACA
+        5.0: (4.0,),                # L-MCA -> L-ICA
+        6.0: (7.0, 9.0, 12.0),      # R-ICA -> R-MCA, R-Pcom, R-ACA
+        7.0: (6.0,),                # R-MCA -> R-ICA
+        8.0: (2.0, 4.0),            # L-Pcom -> L-PCA, L-ICA
+        9.0: (3.0, 6.0),            # R-Pcom -> R-PCA, R-ICA
+        10.0: (11.0, 12.0),         # Acom -> L-ACA, R-ACA
+        11.0: (4.0,),               # L-ACA -> L-ICA
+        12.0: (6.0,)                # R-ACA -> R-ICA
+    }
+
+    for artery in unique_labels:
+        for target_artery in standardAdj[artery]:
+            if target_artery not in unique_labels:
+                continue
+
+            if f"{target_artery}:{artery}" in spline_dict.keys() or f"{artery}:{target_artery}" in spline_dict.keys():
+                continue
+
+            path1, w1 = path_dict[f"{artery}:{target_artery}"]
+            path2, w2 = path_dict[f"{target_artery}:{artery}"]
+
+            path2_rev = path2[::-1]
+            w2_rev = w2[::-1]
+
+            pts_reordered = np.concatenate((path2_rev, path1))
+            w = np.concatenate((w2_rev, w1))
+
+            # -------- 3. chord-length parameterisation ----------------------------------
+            seg_len   = np.linalg.norm(np.diff(pts_reordered, axis=0), axis=1)
+            u         = np.hstack(([0.0], np.cumsum(seg_len)))
+            u        /= u[-1]                                            # scale → [0,1]
 
             # -------- 5. fit a **smoothing** spline (s>0) with those weights ------------
             k         = min(3, len(pts_reordered) - 1)                   # spline degree
@@ -233,7 +271,7 @@ def spline_interpolation(
             tck, _    = make_splprep(pts_reordered.T, u=u, w=w, k=k, s=s_factor)
 
             # -------- 6. sample the spline densely to obtain the smooth centreline ------
-            n_samples = 200
+            n_samples = 400
             u_fine    = np.linspace(0.0, 1.0, n_samples)
             x_f, y_f, z_f = tck.__call__(u_fine)
             smooth_pts = np.column_stack((x_f, y_f, z_f))
@@ -243,7 +281,7 @@ def spline_interpolation(
             centerline_smooth = pv.PolyData(smooth_pts, lines=cells)
 
             network.merge(centerline_smooth, inplace=True)
-            spline_dict[f"{label}:{target_label}"] = tck
+            spline_dict[f"{artery}:{target_artery}"] = tck
 
     # -------- 7. quick visual sanity-check (optional) ---------------------------
     p = pv.Plotter()
@@ -252,7 +290,6 @@ def spline_interpolation(
             label="Weighted smoothing spline")
     p.add_legend()
     p.show()
-
     return spline_dict
 
 def nearest_other_start_artery(start_xyz: np.ndarray,
@@ -392,13 +429,13 @@ def order_artery_points(points: np.ndarray,
 
     return centerlines
 
-def extract_angles(splines, points):
+def extract_angles(splines, points: pv.PolyData):
     
-
-
     #indices of all end points
-    end_pts = [point for point in points.point_data if point["CenterlineLabels"] == 1] #not sure what the label is
-    
+    cent_subset = points["CenterlineLabels"]
+    end_pts = np.flatnonzero(cent_subset == 1.0)
+    #end_pts = [point for point in points.point_data if points["CenterlineLabels"] == 1]
+
     standardAdj = {
         1.0: (2.0, 3.0),            # Bas -> L-PCA, R-PCA
         2.0: (1.0, 8.0),            # L-PCA -> Bas, L-Pcom
@@ -430,7 +467,7 @@ def extract_angles(splines, points):
     }
 
     angle_pairs = []
-
+    
     #make all pairs of angles that intersect one another
     for key in standardAdj.keys():
         for vessel in standardAdj[key]:
@@ -440,6 +477,7 @@ def extract_angles(splines, points):
 
     angles = {}
 
+
     for pair in angle_pairs:
         #vessel1 is the first index in the pair list, vessel2 is the second    
         vessel1 = pair[0]
@@ -447,31 +485,31 @@ def extract_angles(splines, points):
         #if a vessel is missing then skip
         if f"{vessel1}:{vessel2}" not in splines.keys() or f"{vessel2}:{vessel1}" not in splines.keys():
             continue
-        
-        #find end points of vessels
-        points1 = np.array([point for point in end_pts if point["Artery"] == vessel1])
-        points2 = np.array([point for point in end_pts if point["Artery"] == vessel2])
-        
-        #choose the end points that are closest together for the two vessels
-        prev_distance = 1000000
-        for point1 in points1:
-            for point2 in points2:
-                distance = np.linalg.norm(point1 - point2)
-                if distance < prev_distance:
-                    index1 = points1.index(point1)
-                    index2 = points2.index(point2)
-                prev_distance = distance
 
-        end_pt1 = points1[index1]
-        end_pt2 = points2[index2]
+        #find end points of vessels
 
         #find spline for each vessel
         spline1 = splines[f"{vessel1}:{vessel2}"]
         spline2 = splines[f"{vessel2}:{vessel1}"]
 
+        spline1d = spline1.derivative(nu=1)
+        spline2d = spline2.derivative(nu=1)
+
+        n_samples = 200
+        u_fine    = np.linspace(0.0, 1.0, n_samples)
+
+        x_f1, y_f1, z_f1 = spline1d.__call__(u_fine)
+        x_f2, y_f2, z_f2 = spline2d.__call__(u_fine)
+
+        spline1_points = np.column_stack((x_f1, y_f1, z_f1))
+        spline2_points = np.column_stack((x_f2, y_f2, z_f2))
+
+        tan_vector1 = spline1_points[0]
+        tan_vector2 = spline2_points[0]
+
         #tangent vectors
-        tan_vector1 = spline1(end_pt1, nu=1)
-        tan_vector2 = spline2(end_pt2, nu=1)
+        #tan_vector1 = spline1(end_pt1, nu=1)
+        #tan_vector2 = spline2(end_pt2, nu=1)
 
         dot_product = np.dot(tan_vector1, tan_vector2)
 
@@ -480,7 +518,7 @@ def extract_angles(splines, points):
 
         #use dot product to find angle
         cos = (dot_product) / (mag1 * mag2)
-        angle = np.arccos(np.clip(cos, -1, 1))
+        angle = np.rad2deg(np.arccos(np.clip(cos, -1, 1)))
         
         #append angle to dictionary with names of vessels as the key
         angles[f"{vessel_labels[vessel1]}/{vessel_labels[vessel2]}"] = angle

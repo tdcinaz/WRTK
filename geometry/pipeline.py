@@ -11,10 +11,7 @@ from geometry_master import (
     compute_skeleton,
     extract_start_and_end_voxels,
     spline_interpolation,
-    extract_labeled_surface_from_volume,
-    extract_individual_surfaces,
-    merge_coincident_points_on_boundary,
-    remesh
+    extract_angles,
 )
 from skimage.morphology import skeletonize
 
@@ -55,9 +52,16 @@ def pipeline(
 
     skeleton: pv.PolyData = compute_skeleton(nifti_img)
 
-    extract_start_and_end_voxels(nifti_img, pv_image, skeleton)
+    connection_barycenters = extract_start_and_end_voxels(nifti_img, pv_image, skeleton)
 
-    spline_interpolation(skeleton)
+    spline_dict = spline_interpolation(skeleton)
+
+    #print(spline_dict)
+
+    angles_dict = extract_angles(spline_dict, skeleton)
+
+    for key, value in angles_dict.items():
+        print(f"{key}: {value}")
 
     skeleton_file = join(patient_output_path, f"{prefix}_{patient_ID}_skeleton.vtp")
 
