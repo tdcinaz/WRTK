@@ -296,6 +296,54 @@ def crop_to_roi_cube(
     if return_bbox:
         return (imin, imax, jmin, jmax, kmin, kmax), new_affine
 
+def crop_to_roi_cube_harvard_data(       
+        scan_nii: str,
+        roi_mask_nii: str,
+        out_scan_nii: str,
+        out_mask_nii: Optional[str] = None,
+        return_bbox: bool = False):
+        
+
+    scan_obj: nib.Nifti1Image = nib.load(str(scan_nii))
+    mask_obj: nib.Nifti1Image = nib.load(str(roi_mask_nii))
+
+    scan      = scan_obj.get_fdata(dtype=np.float32, caching='unchanged')
+    mask_data = mask_obj.get_fdata(dtype=np.float32,  caching='unchanged').astype(np.uint8)
+
+
+    if mask_data.max() == 0:
+        raise ValueError("ROI mask is empty – nothing to crop.")
+
+    # ---------- 1. find ROI cube extents (voxels) ----------
+    nz       = np.nonzero(mask_data)
+    imin, jmin, kmin = [int(c.min()) for c in nz]
+    imax, jmax, kmax = [int(c.max()) + 1 for c in nz]   # +1 → Python-style stop‐index
+
+    # ---------- 2. crop ----------
+    cropped_scan = scan [imin:imax, jmin:jmax, kmin:kmax]
+    cropped_mask = mask_data[imin:imax, jmin:jmax, kmin:kmax]
+
+    # ---------- 3. build new affine with origin at cube corner ----------
+    #
+    # Original affine: Xworld = A[:, :3] @ (i, j, k) + A[:, 3]
+    # After cropping we want voxel (0,0,0) to map to Xworld = (0,0,0).
+    #
+    new_affine          = scan_obj.affine.copy()
+    new_affine[:3, 3]   = 0.0            # translate origin to (0,0,0)
+    # (The rotation / scaling block new_affine[:3,:3] is left unchanged.)
+
+    # ---------- 4. save ----------
+    hdr: nib.Nifti1Header = scan_obj.header.copy()
+    hdr.set_data_dtype(np.float32)
+
+    nib.save(nib.Nifti1Image(cropped_scan, new_affine, hdr), out_scan_nii)
+
+
+    if out_mask_nii is not None:
+        hdr_mask: nib.Nifti1Header = mask_obj.header.copy()
+        hdr_mask.set_data_dtype(np.uint8)
+        nib.save(nib.Nifti1Image(cropped_mask, new_affine, hdr_mask), out_mask_nii)
+
 
 def coregister_ct_mr(
         fixed_img: str,      # e.g. MR brain volume
