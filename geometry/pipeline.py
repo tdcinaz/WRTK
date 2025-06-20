@@ -54,11 +54,11 @@ def pipeline(
 
     connection_barycenters = extract_start_and_end_voxels(nifti_img, pv_image, skeleton)
 
-    spline_dict = spline_interpolation(skeleton)
+    network = spline_interpolation(skeleton)
 
     #print(spline_dict)
 
-    angles_dict = extract_angles(spline_dict, skeleton)
+    angles_dict = extract_angles(network, skeleton)
 
     for key, value in angles_dict.items():
         print(f"{key}: {value}")

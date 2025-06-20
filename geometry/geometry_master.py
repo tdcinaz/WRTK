@@ -178,6 +178,179 @@ def extract_start_and_end_voxels(nifti_img: nib.Nifti1Image, pv_image: pv.ImageD
 
     return all_barycenters
 
+def build_path_network(paths, rads, tol: float = 1e-5):
+    """
+    Convert a list of (N,3) NumPy arrays into an undirected graph.
+
+    Parameters
+    ----------
+    paths : list[np.ndarray]
+        Each array is a poly-line; element 0 and -1 are path endpoints.
+    tol : float, optional
+        Max Euclidean distance for treating two endpoints as the *same* node.
+
+    Returns
+    -------
+    networkx.Graph
+        • nodes carry attrs:  'coord' (3-vector), 'type' ('end'|'connection'|'bifurcation'|…)
+        • edges carry attrs:  'path_idx', 'polyline'  (original NumPy array)
+    """
+    G = nx.Graph()
+    node_counter = 0
+    edge_counter = 0
+
+    def match_existing(coord):
+        """Return node id of an existing node whose coordinate matches coord within tol."""
+        for nid, data in G.nodes(data=True):
+            if np.linalg.norm(data["coord"] - coord) <= tol:
+                return nid
+        return None
+
+    for path_idx, path in enumerate(paths):
+        if path.shape[0] < 2:
+            raise ValueError(f"Path {path_idx} has fewer than 2 points")
+
+        # --- find (or create) graph nodes for both endpoints -----------------
+        endpoints = [path[0], path[-1]]
+        node_ids = []
+        for coord in endpoints:
+            nid = match_existing(coord)
+            if nid is None:
+                nid = f"N{node_counter}"
+                G.add_node(nid, coord=coord)
+                node_counter += 1
+            node_ids.append(nid)
+
+        # --- insert edge (undirected; direction of path is irrelevant) ------
+        G.add_edge(
+            node_ids[0],
+            node_ids[1],
+            id=f"E{edge_counter}",
+            path_idx=path_idx,
+            polyline=path,
+            rad=rads[path_idx],
+        )
+        edge_counter += 1
+
+    # --- classify each node by degree ---------------------------------------
+    for nid in G.nodes:
+        deg = G.degree[nid]
+        node_type = (
+            "end" if deg == 1
+            else "connection" if deg == 2
+            else "bifurcation" if deg == 3
+            else f"{deg}-way"
+        )
+        G.nodes[nid]["type"] = node_type
+
+    return G
+
+def graph_to_spline_polydata(
+    G: nx.Graph,
+    smooth: float = 0.001,
+    samples_per_unit: int = 50,
+    min_samples: int = 80,
+    tol: float = 1e-6,          # tolerance for merging identical node coords
+):
+    """
+    Assemble one connected PolyData of smoothed centre-lines.
+
+    Compared with the previous version, endpoints that belong to the same
+    graph node now share a **single** point index, so edge curves snap
+    together exactly at every end / connection / bifurcation node.
+    """
+    # ------------------------------------------------------------------ setup
+    # 1. Build a global table of graph nodes -> point indices
+    node2idx = {}
+    points   = []                       # list of [x,y,z] rows
+
+    for nid, data in G.nodes(data=True):
+        coord = np.asarray(data["coord"], dtype=float)
+        # (Optional) deduplicate coords that happen to be equal within *tol*
+        # (rare unless you edit G by hand, but keeps things safe)
+        match = next(
+            (idx for idx, p in enumerate(points)
+             if np.linalg.norm(p - coord) <= tol),
+            None,
+        )
+        if match is not None:
+            node2idx[nid] = match
+        else:
+            node2idx[nid] = len(points)
+            points.append(coord)
+
+    # Helpers --------------------------------------------------------------
+    def _chord_length(pts):
+        return np.linalg.norm(np.diff(pts, axis=0), axis=1).sum()
+
+    lines   = []              # VTK connectivity
+    next_id = len(points)     # first free point index for *internal* samples
+
+    # ------------------------------------------------------------------ edges
+    for (u, v, data) in G.edges(data=True):
+        xyz = np.asarray(data["polyline"], float)
+        rad = np.asarray(data["rad"], float)
+
+        n = len(xyz) * 10
+
+        pts = smooth_centerline(xyz, rad, smooth, n_samples=n)
+
+        clip = int(0.05 * n)
+
+        # ------------------------------------------------------------------
+        # Endpoints: reuse existing node indices
+        start_idx = node2idx[u]
+        end_idx   = node2idx[v]
+
+        # Internal points: create fresh indices
+        internal_pts = pts[clip:-clip]          # exclude endpoints
+        cnt_internal = len(internal_pts)
+
+        if cnt_internal:
+            internal_indices = np.arange(next_id, next_id + cnt_internal,
+                                         dtype=np.int32)
+            points.extend(internal_pts)
+            next_id += cnt_internal
+        else:                             # extremely short edge
+            internal_indices = np.empty(0, dtype=np.int32)
+
+        # VTK line: [nPts  i0  i1  …  iN]
+        vtk_line = np.concatenate((
+            np.array([cnt_internal + 2], dtype=np.int32),
+            np.array([start_idx], dtype=np.int32),
+            internal_indices,
+            np.array([end_idx], dtype=np.int32),
+        ))
+        lines.append(vtk_line)
+
+    # ------------------------------------------------------------------ wrap-up
+    poly = pv.PolyData()
+    poly.points = np.asarray(points)
+    poly.lines  = np.hstack(lines).astype(np.int32)
+
+    return poly
+
+def smooth_centerline(pts, rad, s_rel=0.001, k=3, n_samples=200):
+
+        dists = np.hstack([0.0, np.linalg.norm(np.diff(pts, axis=0), axis=1).cumsum()])
+        u     = dists / dists[-1]
+
+
+        w_min = 0.4
+        w_max = 1.0
+        w = w_min + (rad - rad.min()) * (w_max - w_min) / (rad.max() - rad.min())
+
+        # absolute smoothing target (length units) = s_rel × total length
+        s = s_rel * dists[-1] * len(pts)
+        # cubic or lower if fewer points
+        k = min(k, len(pts) - 1)
+
+        
+        tck, _ = make_splprep(pts.T, u=u, w=w, k=k, s=s)
+        u_fine = np.linspace(0.0, 1.0, n_samples)
+        x, y, z = tck.__call__(u_fine)
+        return np.column_stack([x, y, z])
+
 def spline_interpolation(
     poly: pv.PolyData,
 ):
@@ -188,8 +361,7 @@ def spline_interpolation(
 
     network = pv.PolyData()
     path_dict = {}
-    spline_dict = {}
-
+    
     unique_labels = np.unique(artery_lbl)
     for label in unique_labels:
         # -------- 1. isolate the artery-of-interest ------------------
@@ -211,20 +383,7 @@ def spline_interpolation(
 
             target_label = nearest_other_start_artery(pts_reordered[0], poly)
 
-            # -------- 3. chord-length parameterisation ----------------------------------
-            seg_len   = np.linalg.norm(np.diff(pts_reordered, axis=0), axis=1)
-            u         = np.hstack(([0.0], np.cumsum(seg_len)))
-            u        /= u[-1]                                            # scale → [0,1]
-
-            # -------- 4. build weights from the radius values ---------------------------
-            #   bigger radius  ⇒  bigger weight  ⇒  curve more faithful to that point
-            #w         = rad_reordered / rad_reordered.max()              # normalise to [0,1]
-            w_min = 0.1
-            w_max = 0.5
-
-            w = w_min + (rad_reordered - rad_reordered.min()) * (w_max - w_min) / (rad_reordered.max() - rad_reordered.min())
-
-            path_dict[f"{label}:{target_label}"] = (pts_reordered, w)
+            path_dict[f"{label}:{target_label}"] = (pts_reordered, rad_reordered)
 
     standardAdj = {
         1.0: (2.0, 3.0),            # Bas -> L-PCA, R-PCA
@@ -241,56 +400,301 @@ def spline_interpolation(
         12.0: (6.0,)                # R-ACA -> R-ICA
     }
 
+    #finished_arteries = []
+    
+    grouped_arteries = defaultdict(list)
+    
+    artery_segments = {}
+
     for artery in unique_labels:
+        paths = []
+        rads = []
+        target_arteries = []
+
         for target_artery in standardAdj[artery]:
             if target_artery not in unique_labels:
                 continue
 
-            if f"{target_artery}:{artery}" in spline_dict.keys() or f"{artery}:{target_artery}" in spline_dict.keys():
+            #if f"{target_artery}:{artery}" in finished_arteries:
+            #    continue
+
+            path, rad = path_dict[f"{artery}:{target_artery}"]
+            paths.append(path)
+            rads.append(rad)
+            target_arteries.append(target_artery)
+            #finished_arteries.append(f"{artery}:{target_artery}")
+        print(f"Artery: {artery} --- {len(paths)},{len(rads)}")
+
+        if len(paths) == 1:
+            path = paths[0]
+            rad = rads[0]
+            tail = (path, rad)
+            artery_segments[artery] = [tail]
+            grouped_arteries[artery].insert(0, [tail])
+        
+        if len(paths) == 2:
+            path1 = paths[0]
+            rad1 = rads[0]
+            target1 = target_arteries[0]
+            path2 = paths[1]
+            rad2 = rads[1]
+            target2 = target_arteries[1]
+
+            n1, n2 = len(path1), len(path2)
+            k = 0
+            l = -1
+            # Walk backwards until a mismatch (or one array is exhausted)
+            while (k < n1) and (k < n2) and np.array_equal(path1[n1 - 1 - k], path2[n2 - 1 - k]):
+                k += 1
+            if k == 0:
+                path2_temp = path2[::-1]
+                while (k < n1) and (k < n2) and np.array_equal(path1[n1 - 1 - k], path2_temp[n2 - 1 - k]):
+                    k += 1
+                if k == 0:
+                    print("Error")
+                    continue
+                else:
+                    print("Reversed")
+                    l = n2 - k
+
+            print("k =", k)
+            print("l =", l)
+            print("path1 length =", len(path1))
+            print("path2 length =", len(path2))
+
+            if l == 0:
+                tail = (path1, rad1)
+                artery_segments[artery] = [tail]
+                grouped_arteries[artery].insert(0, [tail])
                 continue
+            
+            tail_pts = path1[n1-k:]
+            tail_rad = rad1[n1-k:]
+            print("tail pts:", len(tail_pts))
 
-            path1, w1 = path_dict[f"{artery}:{target_artery}"]
-            path2, w2 = path_dict[f"{target_artery}:{artery}"]
+            tail = (tail_pts, tail_rad)
+            grouped_arteries[artery].insert(0, [tail])
 
-            path2_rev = path2[::-1]
-            w2_rev = w2[::-1]
+            path1_pts = path1[:n1-k+1]
+            path1_pts_rev = np.ascontiguousarray(path1_pts[::-1])
+            print("path1 pts:", len(path1_pts))
+            path1_rads = rad1[:n1-k+1]
+            path1_rads_rev = np.ascontiguousarray(path1_rads[::-1])
 
-            pts_reordered = np.concatenate((path2_rev, path1))
-            w = np.concatenate((w2_rev, w1))
+            path1_rev = (path1_pts_rev, path1_rads_rev)
+            grouped_arteries[target1].append([path1_rev])
 
-            # -------- 3. chord-length parameterisation ----------------------------------
-            seg_len   = np.linalg.norm(np.diff(pts_reordered, axis=0), axis=1)
-            u         = np.hstack(([0.0], np.cumsum(seg_len)))
-            u        /= u[-1]                                            # scale → [0,1]
+            path2_pts = path2[:n2-k+1]
+            path2_pts_rev = np.ascontiguousarray(path2_pts[::-1])
+            print("path2 pts:", len(path2_pts))
+            path2_rads = rad2[:n2-k+1]
+            path2_rads_rev = np.ascontiguousarray(path2_rads[::-1])
 
-            # -------- 5. fit a **smoothing** spline (s>0) with those weights ------------
-            k         = min(3, len(pts_reordered) - 1)                   # spline degree
-            # heuristic: allow ≈1% average positional deviation
-            s_factor  = 0.01 * np.mean(seg_len) * len(pts_reordered)
+            path2_rev = (path2_pts_rev, path2_rads_rev)
+            grouped_arteries[target2].append([path2_rev])
 
-            tck, _    = make_splprep(pts_reordered.T, u=u, w=w, k=k, s=s_factor)
+            artery_segments[artery] = [tail, path1_rev, path2_rev]
 
-            # -------- 6. sample the spline densely to obtain the smooth centreline ------
-            n_samples = 400
-            u_fine    = np.linspace(0.0, 1.0, n_samples)
-            x_f, y_f, z_f = tck.__call__(u_fine)
-            smooth_pts = np.column_stack((x_f, y_f, z_f))
+        if len(paths) == 3:
+            path1 = paths[0]
+            rad1 = rads[0]
+            target1 = target_arteries[0]
+            path2 = paths[1]
+            rad2 = rads[1]
+            target2 = target_arteries[1]
+            path3 = paths[2]
+            rad3 = rads[2]
+            target3 = target_arteries[2]
 
-            # convert to a PyVista poly-line
-            cells   = np.hstack(([n_samples], np.arange(n_samples))).astype(np.int64)
-            centerline_smooth = pv.PolyData(smooth_pts, lines=cells)
+            n1, n2, n3 = len(path1), len(path2), len(path3)
 
-            network.merge(centerline_smooth, inplace=True)
-            spline_dict[f"{artery}:{target_artery}"] = tck
+            print("path1:", n1)
+            print("path2:", n2)
+            print("path3:", n3)
+            
+            j = 0
+            k = 0
+            l = 0
+            # Walk backwards until a mismatch (or one array is exhausted)
+            while (j < n1) and (j < n2) and np.array_equal(path1[n1 - 1 - j], path2[n2 - 1 - j]):
+                j += 1
 
-    # -------- 7. quick visual sanity-check (optional) ---------------------------
+            while (k < n1) and (k < n3) and np.array_equal(path1[n1 - 1 - k], path3[n3 - 1 - k]):
+                k += 1
+
+            while (l < n2) and (k < n3) and np.array_equal(path2[n2 - 1 - l], path3[n3 - 1 - l]):
+                l += 1
+
+            print("j=", j)
+            print("k=", k)
+            print("l=", l)
+
+            min_match = min(j, k, l)
+
+            tail1_pts = path1[n1-min_match:]
+            tail1_rad = rad1[n1-min_match:]
+
+            print("Tail1:", len(tail1_pts))
+
+            tail1 = (tail1_pts, tail1_rad)
+            grouped_arteries[artery].insert(0, [tail1])
+
+            max_match = max(j, k, l)
+
+
+            tail2_pts = path1[n1-max_match:n1-min_match+1]
+            tail2_pts_rev = np.ascontiguousarray(tail2_pts[::-1])
+            tail2_rad = rad1[n1-max_match:n1-min_match+1]
+            tail2_rad_rev = np.ascontiguousarray(tail2_rad[::-1])
+
+            print("Tail2:", len(tail2_pts))
+
+            tail2 = (tail2_pts_rev, tail2_rad_rev)
+            grouped_arteries[artery].insert(1, [tail2])
+
+            path1_pts = path1[:n1-max_match+1]
+            path1_pts_rev = np.ascontiguousarray(path1_pts[::-1])
+            path1_rads = rad1[:n1-max_match+1]
+            path1_rads_rev = np.ascontiguousarray(path1_rads[::-1])
+
+            print("path1 pts:", len(path1_pts))
+            path1_rev = (path1_pts_rev, path1_rads_rev)
+            grouped_arteries[target1].append([path1_rev])
+
+            path2_pts = path2[:n2-min_match+1]
+            path2_pts_rev = np.ascontiguousarray(path2_pts[::-1])
+            path2_rads = rad2[:n2-min_match+1]
+            path2_rads_rev = np.ascontiguousarray(path2_rads[::-1])
+
+            print("path2 pts:", len(path2_pts))
+            path2_rev = (path2_pts_rev, path2_rads_rev)
+            grouped_arteries[target2].append([path2_rev])
+
+            path3_pts = path3[:n3-max_match+1]
+            path3_pts_rev = np.ascontiguousarray(path3_pts[::-1])
+            path3_rads = rad3[:n3-max_match+1]
+            path3_rads_rev = np.ascontiguousarray(path3_rads[::-1])
+
+            print("path3 pts:", len(path3_pts))
+            path3_rev = (path3_pts_rev, path3_rads_rev)
+            grouped_arteries[target3].append([path3_rev])
+
+            artery_segments[artery] = [tail1, tail2, path1_rev, path2_rev, path3_rev]
+
+    # Warning --- awful code below
+
+    if 1.0 in unique_labels and (2.0 in unique_labels or 3.0 in unique_labels):
+        if len(grouped_arteries[1.0]) == 3:
+            bas_r, bas_rad_r = grouped_arteries[1.0].pop()[0]
+            bas_l, bas_rad_l = grouped_arteries[1.0].pop()[0]
+            pca_r, pca_rad_r = grouped_arteries[3.0].pop()[0]
+            pca_l, pca_rad_l = grouped_arteries[2.0].pop()[0]
+
+            pca_r_full = np.ascontiguousarray(np.concatenate((pca_r, bas_r[::-1])))
+            pca_rad_r_full = np.ascontiguousarray(np.concatenate((pca_rad_r, bas_rad_r[::-1])))
+            grouped_arteries[3.0].append([(pca_r_full, pca_rad_r_full)])
+
+            pca_l_full = np.ascontiguousarray(np.concatenate((pca_l, bas_l[::-1])))
+            pca_rad_l_full = np.ascontiguousarray(np.concatenate((pca_rad_l, bas_rad_l[::-1])))
+            grouped_arteries[2.0].append([(pca_l_full, pca_rad_l_full)])
+
+        elif 2.0 in unique_labels:
+            bas_l, bas_rad_l = grouped_arteries[1.0].pop()[0]
+            pca_l, pca_rad_l = grouped_arteries[2.0].pop()[0]
+            pca_l_full = np.ascontiguousarray(np.concatenate((pca_l, bas_l[::-1])))
+            pca_rad_l_full = np.ascontiguousarray(np.concatenate((pca_rad_l, bas_rad_l[::-1])))
+            grouped_arteries[2.0].append([(pca_l_full, pca_rad_l_full)])
+        else:
+            bas_r = grouped_arteries[1.0].pop()[0]
+            pca_r = grouped_arteries[3.0].pop()[0]
+            pca_r_full = np.ascontiguousarray(np.concatenate((pca_r, bas_r[::-1])))
+            pca_rad_r_full = np.ascontiguousarray(np.concatenate((pca_rad_r, bas_rad_r[::-1])))
+            grouped_arteries[3.0].append([(pca_r_full, pca_rad_r_full)])
+
+    if 5.0 in unique_labels and 4.0 in unique_labels:
+        mca_seg, mca_seg_rad = grouped_arteries[5.0].pop()[0]
+        mca, mca_rad = grouped_arteries[5.0].pop()[0]
+        mca_full = np.ascontiguousarray(np.concatenate((mca_seg, mca)))
+        mca_rad_full = np.ascontiguousarray(np.concatenate((mca_seg_rad, mca_rad)))
+        grouped_arteries[5.0].append([(mca_full, mca_rad_full)])
+
+    if 7.0 in unique_labels and 6.0 in unique_labels:
+        mca_seg, mca_seg_rad = grouped_arteries[7.0].pop()[0]
+        mca, mca_rad = grouped_arteries[7.0].pop()[0]
+        mca_full = np.ascontiguousarray(np.concatenate((mca_seg, mca)))
+        mca_rad_full = np.ascontiguousarray(np.concatenate((mca_seg_rad, mca_rad)))
+        grouped_arteries[7.0].append([(mca_full, mca_rad_full)])
+
+    if 8.0 in unique_labels and 2.0 in unique_labels and 4.0 in unique_labels:
+        pcom_seg1, pcom_seg1_rad = grouped_arteries[8.0].pop()[0]
+        pcom_seg2, pcom_seg2_rad = grouped_arteries[8.0].pop()[0]
+        pcom, pcom_rad = grouped_arteries[8.0].pop()[0]
+        pcom_full = np.ascontiguousarray(np.concatenate((pcom_seg2, pcom, pcom_seg1[::-1])))
+        pcom_rad_full = np.ascontiguousarray(np.concatenate((pcom_seg2_rad, pcom_rad, pcom_seg1_rad[::-1])))
+        grouped_arteries[8.0].append([(pcom_full, pcom_rad_full)])
+    elif 2.0 in unique_labels and 1.0 in unique_labels:
+        pca_seg, pca_seg_rad = grouped_arteries[2.0].pop()[0]
+        pca, pca_rad = grouped_arteries[2.0].pop()[0]
+        pca_full = np.ascontiguousarray(np.concatenate((pca_seg, pca)))
+        pca_rad_full = np.ascontiguousarray(np.concatenate((pca_seg_rad, pca_rad)))
+        grouped_arteries[2.0].append([(pca_full, pca_rad_full)])
+
+    if 9.0 in unique_labels and 3.0 in unique_labels and 6.0 in unique_labels:
+        pcom_seg1, pcom_seg1_rad = grouped_arteries[9.0].pop()[0]
+        pcom_seg2, pcom_seg2_rad = grouped_arteries[9.0].pop()[0]
+        pcom, pcom_rad = grouped_arteries[9.0].pop()[0]
+        pcom_full = np.ascontiguousarray(np.concatenate((pcom_seg2, pcom, pcom_seg1[::-1])))
+        pcom_rad_full = np.ascontiguousarray(np.concatenate((pcom_seg2_rad, pcom_rad, pcom_seg1_rad[::-1])))
+        grouped_arteries[9.0].append([(pcom_full, pcom_rad_full)])
+    elif 3.0 in unique_labels and 1.0 in unique_labels:
+        pca_seg, pca_seg_rad = grouped_arteries[3.0].pop()[0]
+        pca, pca_rad = grouped_arteries[3.0].pop()[0]
+        pca_full = np.ascontiguousarray(np.concatenate((pca_seg, pca)))
+        pca_rad_full = np.ascontiguousarray(np.concatenate((pca_seg_rad, pca_rad)))
+        grouped_arteries[3.0].append([(pca_full, pca_rad_full)])
+
+    if 11.0 in unique_labels and 4.0 in unique_labels:
+        aca_seg, aca_seg_rad = grouped_arteries[11.0].pop()[0]
+        aca, aca_rad = grouped_arteries[11.0].pop()[0]
+        aca_full = np.ascontiguousarray(np.concatenate((aca_seg, aca)))
+        aca_rad_full = np.ascontiguousarray(np.concatenate((aca_seg_rad, aca_rad)))
+        grouped_arteries[11.0].append([(aca_full, aca_rad_full)])
+
+    if 12.0 in unique_labels and 6.0 in unique_labels:
+        aca_seg, aca_seg_rad = grouped_arteries[12.0].pop()[0]
+        aca, aca_rad = grouped_arteries[12.0].pop()[0]
+        aca_full = np.ascontiguousarray(np.concatenate((aca_seg, aca)))
+        aca_rad_full = np.ascontiguousarray(np.concatenate((aca_seg_rad, aca_rad)))
+        grouped_arteries[12.0].append([(aca_full, aca_rad_full)])
+
+    artery_list = []
+    rads_list = []
+    for artery in unique_labels:
+        for idx in range(len(grouped_arteries[artery])):
+            artery_list.append(grouped_arteries[artery][idx][0][0])
+            rads_list.append(grouped_arteries[artery][idx][0][1])
+
+    G = build_path_network(artery_list, rads_list)
+    network = graph_to_spline_polydata(G, smooth=0.001)
+
+    for artery in unique_labels:
+        print("LEN:", len(grouped_arteries[artery]))
+
     p = pv.Plotter()
     p.add_mesh(poly, render_points_as_spheres=True, point_size=5, color="lightgray")
     p.add_mesh(network, color="dodgerblue", line_width=4,
             label="Weighted smoothing spline")
     p.add_legend()
     p.show()
-    return spline_dict
+
+
+    print("Artery segments:")
+    for key in artery_segments.keys():
+        print(f"{key}")
+        for i in range(len(artery_segments[key])):
+            print(f"----{len(artery_segments[key][i])}")
+
+    return network
 
 def nearest_other_start_artery(start_xyz: np.ndarray,
                                mesh: pv.PolyData,
