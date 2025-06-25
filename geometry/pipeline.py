@@ -10,7 +10,7 @@ from geometry_master import (
     nifti_to_pv_image_data,
     compute_skeleton,
     extract_start_and_end_voxels,
-    spline_interpolation,
+    create_cow,
     extract_angles,
 )
 from skimage.morphology import skeletonize
@@ -52,16 +52,17 @@ def pipeline(
 
     skeleton: pv.PolyData = compute_skeleton(nifti_img)
 
-    connection_barycenters = extract_start_and_end_voxels(nifti_img, pv_image, skeleton)
+    extract_start_and_end_voxels(nifti_img, pv_image, skeleton)
 
-    network = spline_interpolation(skeleton)
+    create_cow(skeleton)
+    #network = spline_interpolation(skeleton)
 
     #print(spline_dict)
 
-    angles_dict = extract_angles(network, skeleton)
+    #angles_dict = extract_angles(network, skeleton)
 
-    for key, value in angles_dict.items():
-        print(f"{key}: {value}")
+    #for key, value in angles_dict.items():
+    #    print(f"{key}: {value}")
 
     skeleton_file = join(patient_output_path, f"{prefix}_{patient_ID}_skeleton.vtp")
 
