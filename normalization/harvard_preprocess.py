@@ -32,7 +32,8 @@ def parse_arguments() -> argparse.Namespace:
         help="ToF MRA image [ 3D image | .nii/ .nii.gz ].",
     )
     parser.add_argument(
-        "sex"
+        "sex",
+        help="patient_sex"
     )
     parser.add_argument(
         "patient_ID",
@@ -145,18 +146,13 @@ def main():
     #batch mode
     if args.batch_mode:
         #creates a directory called all scans, initially is empty
-        all_harvard_scans = "tests/output/cropped"
-        os.makedirs(all_harvard_scans, exist_ok=True)
-        scan_folder = os.listdir(args.input_folder)
-        
+        scan_folder = sorted(os.listdir(args.input_folder))
+
         for scan in scan_folder:         
             try:
-                args.patient_ID = scan[-10:-7]
-                if len(scan) == 24:
-                    args.sex = "female"
-                else:
-                    args.sex = "male"
-
+                args.patient_ID = scan.split('.')[0]
+                print(args.patient_ID)
+                args.sex = ""
                 full_pipeline(args, prefix)
 
             except:
@@ -167,7 +163,6 @@ def main():
     else:
         full_pipeline(args, prefix)
     
-
 
 if __name__ == "__main__":
     main()
