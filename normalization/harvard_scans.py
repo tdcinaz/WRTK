@@ -4,6 +4,7 @@ import os
 from os.path import join
 import nibabel as nib
 import numpy as np
+import shutil
 
 from tof_master import (
     create_willis_cube,
@@ -47,7 +48,7 @@ def full_pipeline(
 
     logging.info("1. ===> Aligning Scan Orientation <===")
 
-    CT_path = join(args.input_folder, f"stroke_{sex}_{patient_ID}.nii.gz")
+    CT_path = join(args.input_folder, f"{patient_ID}.nii.gz")
 
     logging.info("   1.1 ++++ : Aligning CT Scan")
     ct_raw: nib.Nifti1Image = nib.load(CT_path)
@@ -97,7 +98,7 @@ def full_pipeline(
     logging.info("6. ===> Cropping and re-anchoring scan data <===")
 
     logging.info("   6.1 ++++ : Cropping an re-anchoring CT")
-    ct_cropped_file = join(nn_resolution_path, f"{prefix}_ct_cropped_{patient_ID}.nii.gz")
+    ct_cropped_file = join(nn_resolution_path, f"stroke_{patient_ID}_cropped.nii.gz")
 
     # ----------------------------------------------------------
     # 2. build a new affine for the *whole* MR volume
@@ -114,6 +115,8 @@ def full_pipeline(
 
     aligned_ct_cube = join(nn_resolution_path, f"{prefix}_ct_aligned_cube_{patient_ID}.nii.gz")
 
-    ct_cropped_file = f"tests/output/harvard_data_cropped/stroke/_ct_cropped_{patient_ID}_{sex}.nii.gz"
-
     crop_to_roi_cube_harvard_data(ct_resample_file, ct_cube_file, ct_cropped_file)
+
+    shutil.move(ct_cropped_file, "tests/output/harvard_data_cropped/stroke")
+    shutil.rmtree("tests/output/harvard_data_temp/stroke/nn_space")
+    shutil.rmtree("tests/output/harvard_data_temp//original_space")

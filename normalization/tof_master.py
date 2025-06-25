@@ -161,7 +161,7 @@ def brain_extract(in_file: str,
             subprocess.run(["mri_synthstrip", "-i", in_file,
                             "-m", out_mask, "-o", out_brain, "-t", str(threads)] + (["-g"] if use_gpu else []), check=True)
             tool = "mri_synthstrip"
-        except FileNotFoundError:
+        except:
             tool = "TotalSegmentator"
 
     if tool == "afni":                      # fallback for MRI only
@@ -173,7 +173,7 @@ def brain_extract(in_file: str,
         ss.run()
         print("afni skull stripping complete")
     elif tool == "TotalSegmentator":       # fallback for CT only
-        tmp_dir = pathlib.Path(out_mask).with_suffix("")
+        tmp_dir = pathlib.Path(out_mask).with_suffix("").with_suffix("")
         subprocess.run(["TotalSegmentator", "-i", in_file,
                         "-o", str(tmp_dir), "--fast"], check=True)
         brain_label = tmp_dir / "brain.nii.gz"
