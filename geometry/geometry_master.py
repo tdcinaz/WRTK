@@ -18,6 +18,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import minimum_spanning_tree, dijkstra
 import networkx as nx
 from typing import Tuple
+from functools import cached_property
 
 def nifti_to_pv_image_data(nifti_img):
     """
@@ -105,6 +106,114 @@ def compute_skeleton(nifti_img: nib.Nifti1Image):
 
     return pv_skeleton
 
+def filter_out_artery_points(mesh: pv.PolyData,
+                             artery_to_remove: float,
+                             atol: float = 1e-6) -> pv.PolyData:
+    """
+    Return a copy of *mesh* with every point whose ``Artery`` value equals
+    *artery_to_remove* (within *atol*) removed.
+
+    Parameters
+    ----------
+    mesh : pyvista.PolyData
+        The input mesh.  Must contain a point-data array named ``"Artery"``.
+    artery_to_remove : float
+        The artery label to filter out (e.g., ``10.0``).
+    atol : float, optional
+        Absolute tolerance when comparing floating-point values.
+        Defaults to ``1 × 10⁻⁶``.
+
+    Returns
+    -------
+    pyvista.PolyData
+        A new mesh that no longer contains the specified artery’s points
+        (and any cells that depended on them).
+
+    Raises
+    ------
+    KeyError
+        If the mesh lacks an ``"Artery"`` point-data array.
+    ValueError
+        If no points remain after filtering.
+    """
+    # --- sanity checks --------------------------------------------------------
+    if "Artery" not in mesh.point_data:
+        raise KeyError("Point-data array 'Artery' not found in the mesh.")
+
+    arteries = np.asarray(mesh["Artery"])
+    keep_mask = np.abs(arteries - artery_to_remove) > atol       # keep ≠ target
+    keep_ids  = np.where(keep_mask)[0]
+
+    if keep_ids.size == 0:
+        raise ValueError("Filtering removed every point; nothing left to return.")
+
+    # --- extract the surviving points & associated cells ----------------------
+    # `adjacent_cells=False` ensures cells touching discarded points are dropped.
+    out = mesh.extract_points(keep_ids, adjacent_cells=False, include_cells=True)
+
+    # final tidy-up: remove any orphaned points left by cell deletion
+    return out.clean()
+
+def filter_artery_by_radius(mesh: pv.PolyData,
+                            artery_label: float,
+                            radius_min: float,
+                            atol: float = 1e-6) -> pv.PolyData:
+    """
+    Return a copy of *mesh* with points from a given artery removed if their
+    ``Radius`` value is below ``radius_min``.
+
+    Parameters
+    ----------
+    mesh : pyvista.PolyData
+        Input mesh. Must contain point-data arrays ``"Artery"`` and ``"Radius"``.
+    artery_label : float
+        The artery whose thin points you want to eliminate (e.g. ``10.0``).
+    radius_min : float
+        Minimum allowable radius. Points in the chosen artery with a radius
+        **< radius_min** are discarded.
+    atol : float, optional
+        Absolute tolerance when comparing floating-point artery labels.
+
+    Returns
+    -------
+    pyvista.PolyData
+        A new, cleaned mesh.
+
+    Raises
+    ------
+    KeyError
+        If required data arrays are missing.
+    ValueError
+        If all points are removed.
+    """
+    # --- sanity checks --------------------------------------------------------
+    for name in ("Artery", "Radius"):
+        if name not in mesh.point_data:
+            raise KeyError(f"Point-data array '{name}' not found in the mesh.")
+
+    arteries = np.asarray(mesh["Artery"])
+    radii    = np.asarray(mesh["Radius"])
+
+    # Points to KEEP:
+    #   • any artery ≠ target
+    #   • OR radius ≥ radius_min
+    keep_mask = ~(
+        (np.abs(arteries - artery_label) < atol) &      # same artery …
+        (radii < radius_min)                            # … but too small
+    )
+    keep_ids = np.where(keep_mask)[0]
+
+    if keep_ids.size == 0:
+        raise ValueError("Filtering removed every point; nothing left to return.")
+
+    # --- extract surviving points & corresponding cells -----------------------
+    out = mesh.extract_points(keep_ids,
+                              adjacent_cells=False,
+                              include_cells=True)
+
+    # clean() drops any orphaned points left by cell deletion
+    return out.clean()
+
 def extract_start_and_end_voxels(nifti_img: nib.Nifti1Image, pv_image: pv.ImageData, skeleton: pv.PolyData):
     standardAdj = {
         1.0: (2.0, 3.0),            # Bas -> L-PCA, R-PCA
@@ -186,6 +295,7 @@ def smooth_trunk(pts, rad: np.ndarray | None = None, s_rel=0.001, k=3, n_samples
     tck, _ = make_splprep(pts_aug.T, u=u, w=w, k=k, s=s)
     u_fine = np.linspace(0.0, 1.0, n_samples)
     x, y, z = tck.__call__(u_fine)
+    ds = tck.__call__(u_fine, 1)
 
     d0 = np.array(tck.__call__(0.0, 1))
     d0 /= np.linalg.norm(d0)
@@ -197,7 +307,7 @@ def smooth_trunk(pts, rad: np.ndarray | None = None, s_rel=0.001, k=3, n_samples
     if tuple(pts[-1]) not in endpoint_tangents.keys():
         endpoint_tangents[tuple(pts[-1])] = d1          # finish end
 
-    return np.column_stack([x, y, z])
+    return np.column_stack([x, y, z]), ds
 
 def smooth_trunk2(pts, rad: np.ndarray | None = None, s_rel=0.001, k=3, n_samples=200, h_fraction=0.05, tan_strength=0.05):
     p0, p1 = pts[0], pts[-1]
@@ -239,6 +349,7 @@ def smooth_trunk2(pts, rad: np.ndarray | None = None, s_rel=0.001, k=3, n_sample
     tck, _ = make_splprep(pts_aug.T, u=u, w=w, k=k, s=s)
     u_fine = np.linspace(0.0, 1.0, n_samples)
     x, y, z = tck.__call__(u_fine)
+    ds = tck.__call__(u_fine, 1)
 
     d0 = np.array(tck.__call__(0.0, 1))
     d0 /= np.linalg.norm(d0)
@@ -252,7 +363,7 @@ def smooth_trunk2(pts, rad: np.ndarray | None = None, s_rel=0.001, k=3, n_sample
         print(f"Added {tuple(p1)} to endpoint_tangents")
         endpoint_tangents[tuple(p1)] = d1          # finish end
 
-    return np.column_stack([x, y, z])
+    return np.column_stack([x, y, z]), ds
 
 def smooth_branch(pts, rad: np.ndarray | None = None, s_rel=0.001, k=3, n_samples=200, h_fraction=0.05, tan_strength=0.05):
     p0, p1 = pts[0], pts[-1]
@@ -306,8 +417,9 @@ def smooth_branch(pts, rad: np.ndarray | None = None, s_rel=0.001, k=3, n_sample
     tck, _ = make_splprep(pts_aug.T, u=u, w=w, k=k, s=s)
     u_fine = np.linspace(0.0, 1.0, n_samples)
     x, y, z = tck.__call__(u_fine)
+    ds = tck.__call__(u_fine, 1)
 
-    return np.column_stack([x, y, z])
+    return np.column_stack([x, y, z]), ds
 
 class PointDataArrays:
     def __init__(self, skeleton: pv.PolyData, artery_labels: str, point_labels: str, sphere_labels: str):
@@ -329,6 +441,15 @@ class Branch:
         self.target = target
         self.ords = ords
         self.spheres = spheres
+                         
+    @cached_property
+    def length(self):
+        points = self.ords
+        length = 0
+        for count in range(len(points) - 1):
+            seg_length = np.linalg.norm(points[count] - points[count+1])
+            length += seg_length
+        return length
 
 class Trunk:
     def __init__(self, label: float, part: int, branches: list, ords, spheres):
@@ -337,6 +458,15 @@ class Trunk:
         self.branches = branches
         self.ords = ords
         self.spheres = spheres
+
+    @cached_property
+    def length(self):
+        points = self.ords
+        length = 0
+        for count in range(len(points) - 1):
+            seg_length = np.linalg.norm(points[count] - points[count+1])
+            length += seg_length
+        return length
 
 class Artery:
     def __init__(self, skeleton: pv.PolyData, label: float, point_data: PointDataArrays):
@@ -404,7 +534,7 @@ class Artery:
 
     def split_paths(self):
 
-        if len(self.paths) == 1 or (self.label == 10.0 and len(self.paths) > 0):
+        if len(self.paths) == 1:
             path: Path = list(self.paths.values())[0]
             self.trunks.append(Trunk(self.label, 0, [], path.pts_reordered, path.rad_reordered))
         elif len(self.paths) == 2:
@@ -606,7 +736,81 @@ class Artery:
             else:
                 "ERROR Trifurcation"
                 sys.exit(2)
-            
+
+class Connection:
+    def __init__(self, point, splines: list):
+        self.point = point
+        self.splines = splines
+        self.path_points = [path.points for path in self.paths]
+        self.derivative_pts = []
+        self.derivatives = []
+    
+    @cached_property
+    def paths(self):
+        path_list = []
+        for spline in self.splines:
+            points = spline.points
+            if np.allclose(points[-1], self.point, atol=1e-2) or np.allclose(points[0], self.point, atol=1e-2):
+                path_list.append(spline)
+        paths = path_list
+        return paths
+
+    @cached_property
+    def bifurcation_label(self):
+        bifurcation_label = ""
+        vessel_labels = {
+            1.0: "Basillar",
+            2.0: "L-PCA",
+            3.0: "R-PCA",
+            4.0: "L-ICA",
+            5.0: "L-MCA",
+            6.0: "R-ICA",
+            7.0: "R-MCA",
+            8.0: "L-Pcom",
+            9.0: "R-Pcom",
+            10.0: "Acom",
+            11.0: "L-ACA",
+            12.0: "R-ACA",
+            13.0: "3rd A2"
+        }
+        labels = []
+        for path in self.paths:
+            label = path.label
+            labels.append(label)
+        
+        labels = np.unique(labels)
+        for label in labels:
+            bifurcation_label = bifurcation_label + f"{vessel_labels[label]}/"
+
+        return bifurcation_label[:-1]
+
+    @cached_property
+    def derivative_points(self):
+        derivative_points = []
+        for points in self.path_points:
+            if np.allclose(points[-1], self.point, atol=1e-2):
+                points = np.flip(points, axis=0)
+            derivative_point = points[6]
+            derivative_points.append(derivative_point)
+        return derivative_points
+
+class Spline:
+    def __init__(self, trunk_or_branch: str, obj):
+        #the actual trunk or branch object
+        self.obj = obj      
+        self.n_samples = len(obj.ords) * 5
+        #trunk vs trunk2 vs branch
+        if trunk_or_branch == "trunk":
+            self.points, self.derivatives = smooth_trunk(obj.ords, obj.spheres, n_samples=self.n_samples)  
+        elif trunk_or_branch == "trunk2":
+            self.points, self.derivatives = smooth_trunk2(obj.ords, obj.spheres, n_samples=self.n_samples, h_fraction=0.05, tan_strength=0.01) 
+        else:
+            self.points, self.derivatives = smooth_branch(obj.ords, obj.spheres, n_samples=self.n_samples, h_fraction=0.01, tan_strength=0.01)  
+        
+        self.cells = np.hstack(([self.n_samples], np.arange(self.n_samples))) 
+        self.curve = pv.PolyData(self.points, lines=self.cells)
+        self.label = obj.label
+
 class COW:
     def __init__(self, skeleton: pv.PolyData):
         self.skeleton = skeleton
@@ -622,7 +826,52 @@ class COW:
         self.trunks2 = {}
         self.branches = {}
         self.combine_arteries()
-    
+        self.connections = []
+        self.get_connections()
+
+    @cached_property
+    def all_splines(self):
+        all_splines = []
+        for trunk in list(self.trunks.values()):
+            all_splines.append(Spline("trunk", trunk))
+        for trunk2 in list(self.trunks2.values()):
+            all_splines.append(Spline("trunk2", trunk2))
+        for branch in list(self.branches.values()):
+            all_splines.append(Spline("branch", branch))
+        return all_splines
+
+    def get_connections(self):
+        #iterate through arteries
+        connection_pts = np.empty((0, 3))
+        for key in self.arteries.keys():
+            #for the given artery, find how many paths it contains
+            num_paths = len(self.arteries[key].paths)
+            paths = list(self.arteries[key].paths.values())
+            combinations = []       
+            #if the artery contains only one path, it cannot have any split points along the artery, so continue
+            if num_paths <= 1:
+                continue
+            for path in paths:
+                for path2 in paths:
+                    if path.target_label != path2.target_label:
+                        combinations.append([path.target_label, path2.target_label])
+            #find all unique combinations of vessel intersections
+            combinations = np.unique(np.sort(combinations, axis=1), axis=0)
+
+            for combination in combinations:
+                for path1 in paths:
+                    for path2 in paths:
+                        #if the path labels correspond to a combination in combinations, continue and find the last shared connection point
+                        if ([path1.target_label, path2.target_label] == combination).all():
+                            if (find_last_shared_point(path1, path2) == [0, 0, 0]).all():
+                                continue
+                            connection_pts = np.vstack([connection_pts, find_last_shared_point(path1, path2)])
+        
+        #connections needs all splines as an input
+        #remove duplicate connection points and make an instance of connection class
+        for connection in np.unique(connection_pts, axis=0):
+            self.connections.append(Connection(connection, self.all_splines))
+
     def get_arteries(self):
         for label in self.present_artery_labels:
             self.arteries[label] = Artery(self.skeleton, label, self.arrays)
@@ -706,37 +955,92 @@ class COW:
                     #print(part3.ords)
 
     def graph_arteries(self):
-        for trunk in self.trunks.values():
-            n_samples = 200
-            pts = smooth_trunk(trunk.ords, trunk.spheres, n_samples=n_samples)
-            #pts = smooth_trunk(trunk.ords, n_samples=n_samples)
-            cells = np.hstack(([n_samples], np.arange(n_samples)))        # single poly-line
-            curve = pv.PolyData(pts, lines=cells)
-            self.network.merge(curve, inplace=True)
-
-        for trunk2 in self.trunks2.values():
-            n_samples = 200
-            pts = smooth_trunk2(trunk2.ords, trunk2.spheres, n_samples=n_samples, h_fraction=0.05, tan_strength=0.01)
-            #pts = smooth_trunk2(trunk2.ords, n_samples=n_samples, h_fraction=0.05, tan_strength=0.01)
-            cells = np.hstack(([n_samples], np.arange(n_samples)))        # single poly-line
-            curve = pv.PolyData(pts, lines=cells)
-            self.network.merge(curve, inplace=True)
-
-        for branch in self.branches.values():
-            n_samples = 200
-            pts = smooth_branch(branch.ords, branch.spheres, n_samples=n_samples, h_fraction=0.01, tan_strength=0.01)
-            #pts = smooth_branch(branch.ords, n_samples=n_samples, h_fraction=0.01, tan_strength=0.01)
-            cells = np.hstack(([n_samples], np.arange(n_samples)))        # single poly-line
-            curve = pv.PolyData(pts, lines=cells)
-            self.network.merge(curve, inplace=True)
+        derivative_points = np.empty((0, 3))
+        for connection in self.connections:
+            points = connection.derivative_points
+            for point in points:
+                derivative_points = np.vstack((derivative_points, point))
+        for spline in self.all_splines:
+            self.network.merge(spline.curve, inplace=True)
 
         p = pv.Plotter()
         p.add_mesh(self.skeleton, render_points_as_spheres=True, point_size=5, color="lightgray")
         p.add_mesh(self.network, color="dodgerblue", line_width=4, label="Weighted smoothing spline")
+        point_cloud = [connection.point for connection in self.connections]
+        derivative_point_cloud = pv.PolyData(derivative_points)
+        p.add_mesh(derivative_point_cloud, color = 'purple', point_size=10, render_points_as_spheres=True)
+        p.add_mesh(pv.PolyData(point_cloud), color='red', point_size=10, render_points_as_spheres=True)
         p.add_legend()
         p.show()
+        
+    def angle_test(self):
+        for trunk in self.trunks.values():
+            n_samples = 200
+            pts = smooth_trunk(trunk.ords, trunk.spheres, n_samples=n_samples)
+            
+
+        for trunk2 in self.trunks2.values():
+            n_samples = 200
+            pts = smooth_trunk2(trunk2.ords, trunk2.spheres, n_samples=n_samples, h_fraction=0.05, tan_strength=0.01)
+            
+
+        for branch in self.branches.values():
+            n_samples = 200
+            pts = smooth_branch(branch.ords, branch.spheres, n_samples=n_samples, h_fraction=0.01, tan_strength=0.01)
+            
+    def get_angles(self):
+
+        #trunks = self.trunks
+        #for key in trunks.keys():
+        #    print(trunks[key].length)
+
+        return
 
 
+
+        #unique_values, counts = np.unique(connection_points, return_counts=True)
+
+        #for value, count in zip(unique_values, counts):
+        #    print(f"{value}:{count}")
+
+def find_last_shared_point(path1, path2):
+    #find points assosiated with each branching path
+    path1_pts = path1.pts_reordered
+    path2_pts = path2.pts_reordered
+
+    #find how many points the longer path has
+    max_len = max(len(path1_pts), len(path2_pts))
+
+    flipped = False
+    #flip the numpy arrays so they're going in the same direction
+    while flipped == False:
+        if (path1_pts[-1] == path2_pts[-1]).all() == True:
+            path1_pts = np.flip(path1_pts, axis=0)
+            path2_pts = np.flip(path2_pts, axis=0)
+            flipped = True
+        elif (path1_pts[0] == path2_pts[-1]).all() == True:
+            path2_pts = np.flip(path2_pts, axis=0)
+            flipped = True
+        elif (path1_pts[-1] == path2_pts[0]).all() == True:
+            path1_pts = np.flip(path1_pts, axis=0)
+            flipped = True
+        elif (path1_pts[0] == path2_pts[0]).all() == True:
+            flipped = True
+        #accounts for weird geometry
+        else:
+            path1_pts = np.delete(path1_pts, 0, axis=0)
+            path2_pts = np.delete(path2_pts, 0, axis=0)
+
+
+    #pad the shorter path with [0, 0, 0] so they're the same length
+    path1_pts = np.pad(path1_pts, ((0, max_len - len(path1_pts)), (0, 0)), mode='constant', constant_values=0)
+    path2_pts = np.pad(path2_pts, ((0, max_len - len(path2_pts)), (0, 0)), mode='constant', constant_values=0)
+
+    #find the where the points diverge and find the index of that point
+    last_shared_pt_idx = np.flatnonzero((path1_pts == path2_pts).all(axis=1))[-1]
+    #find the point
+    last_shared_pt = path1_pts[last_shared_pt_idx]
+    return last_shared_pt
 
 def create_cow(
     skeleton: pv.PolyData,
@@ -744,6 +1048,9 @@ def create_cow(
     test_cow = COW(skeleton)
 
     test_cow.graph_arteries()
+    test_cow.get_angles()
+    return test_cow
+
 
 
 
@@ -784,19 +1091,18 @@ def nearest_other_start_artery(
         or if no compatible start points exist.
     """
     standardAdj: dict[float, tuple[float, ...]] = {
-        1.0: (2.0, 3.0),
-        2.0: (1.0, 8.0),
-        3.0: (1.0, 9.0),
-        4.0: (5.0, 8.0, 11.0),
-        5.0: (4.0,),
-        6.0: (7.0, 9.0, 12.0),
-        7.0: (6.0,),
-        8.0: (2.0, 4.0),
-        9.0: (3.0, 6.0),
-        10.0: (11.0, 12.0),
-        11.0: (4.0,),
-        12.0: (6.0,),
-        13.0: (10.0, 11.0, 12.0),
+        1.0: (2.0, 3.0),            # Bas -> L-PCA, R-PCA
+        2.0: (1.0, 8.0),            # L-PCA -> Bas, L-Pcom
+        3.0: (1.0, 9.0),            # R-PCA -> Bas, R-Pcom
+        4.0: (5.0, 8.0, 11.0),      # L-ICA -> L-MCA, L-Pcom, L-ACA
+        5.0: (4.0,),                # L-MCA -> L-ICA
+        6.0: (7.0, 9.0, 12.0),      # R-ICA -> R-MCA, R-Pcom, R-ACA
+        7.0: (6.0,),                # R-MCA -> R-ICA
+        8.0: (2.0, 4.0),            # L-Pcom -> L-PCA, L-ICA
+        9.0: (3.0, 6.0),            # R-Pcom -> R-PCA, R-ICA
+        10.0: (11.0, 12.0),         # Acom -> L-ACA, R-ACA
+        11.0: (4.0,),               # L-ACA -> L-ICA
+        12.0: (6.0,)                # R-ACA -> R-ICA
     }
 
     starts   = np.asarray(mesh['CenterlineLabels'])  # 0.0 = normal, 1.0 = start
@@ -1017,8 +1323,7 @@ def extract_angles(splines, points: pv.PolyData):
     #indices of all end points
     cent_subset = points["CenterlineLabels"]
     end_pts = np.flatnonzero(cent_subset == 1.0)
-    #end_pts = [point for point in points.point_data if points["CenterlineLabels"] == 1]
-
+    
     standardAdj = {
         1.0: (2.0, 3.0),            # Bas -> L-PCA, R-PCA
         2.0: (1.0, 8.0),            # L-PCA -> Bas, L-Pcom
@@ -1089,10 +1394,6 @@ def extract_angles(splines, points: pv.PolyData):
 
         tan_vector1 = spline1_points[0]
         tan_vector2 = spline2_points[0]
-
-        #tangent vectors
-        #tan_vector1 = spline1(end_pt1, nu=1)
-        #tan_vector2 = spline2(end_pt2, nu=1)
 
         dot_product = np.dot(tan_vector1, tan_vector2)
 

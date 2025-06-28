@@ -14,6 +14,7 @@ from tof_master import (
     brain_extract,
     crop_to_roi_cube,
     coregister_ct_mr,
+    crop_reanchor_original,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -297,3 +298,42 @@ def full_pipeline(
         output          = aligned_mr_seg_cube,
         interpolation   = "MultiLabel",
     )
+
+    logging.info("9. ===> Creating ROI cubes at ORIGINAL resolution <===")
+
+    # In both normal and --skip modes we need bbox + resampled affine
+    ct_bbox_file = join(nn_resolution_path, f"{prefix}_ct_bbox_{patient_ID}.npy")
+    mr_bbox_file = join(nn_resolution_path, f"{prefix}_mr_bbox_{patient_ID}.npy")
+    ct_bbox = np.load(ct_bbox_file)
+    mr_bbox = np.load(mr_bbox_file)
+
+    ct_resample_file = join(nn_resolution_path, f"{prefix}_ct_resampled_{patient_ID}.nii.gz")
+    mr_resample_file = join(nn_resolution_path, f"{prefix}_mr_resampled_{patient_ID}.nii.gz")
+    ct_aff_nn = nib.load(ct_resample_file).affine
+    mr_aff_nn = nib.load(mr_resample_file).affine
+
+    # Paths to autoboxed ORIGINAL‑RES images/masks (created in Step 2)
+    ct_autobox_file        = join(original_path, f"{prefix}_autobox_ct_{patient_ID}.nii.gz")
+    ct_seg_autobox_file    = join(original_path, f"{prefix}_seg_autobox_ct_{patient_ID}.nii.gz")
+    mr_autobox_file        = join(original_path, f"{prefix}_autobox_mr_{patient_ID}.nii.gz")
+    mr_seg_autobox_file    = join(original_path, f"{prefix}_seg_autobox_mr_{patient_ID}.nii.gz")
+
+    # Output filenames
+    ct_orig_cube_file      = join(original_path, f"{prefix}_ct_cube_orig_{patient_ID}.nii.gz")
+    ct_orig_cube_seg_file  = join(original_path, f"{prefix}_ct_cube_orig_seg_{patient_ID}.nii.gz")
+    mr_orig_cube_file      = join(original_path, f"{prefix}_mr_cube_orig_{patient_ID}.nii.gz")
+    mr_orig_cube_seg_file  = join(original_path, f"{prefix}_mr_cube_orig_seg_{patient_ID}.nii.gz")
+
+    # --- CT ----------------------------------------------------------------
+    logging.info("   9.1 ++++ : CT original‑resolution ROI cube")
+    crop_reanchor_original(ct_autobox_file, ct_seg_autobox_file,
+                            ct_bbox, ct_aff_nn,
+                            ct_orig_cube_file, ct_orig_cube_seg_file)
+
+    # --- MR ----------------------------------------------------------------
+    logging.info("   9.2 ++++ : MR original‑resolution ROI cube")
+    crop_reanchor_original(mr_autobox_file, mr_seg_autobox_file,
+                            mr_bbox, mr_aff_nn,
+                            mr_orig_cube_file, mr_orig_cube_seg_file)
+
+    logging.info("      ✓ Saved original‑resolution cube images & masks → 'original_space/'")

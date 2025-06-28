@@ -604,3 +604,58 @@ def mask_image(in_file: str, out_file: str, out_brain_masked: str) -> nib.Nifti1
 
     # Binary conversion of mask
     return nib.load(out_file)
+
+def crop_reanchor_original(img_path: str,
+                             seg_path: str,
+                             bbox_nn: np.ndarray,
+                             affine_nn: np.ndarray,
+                             out_img: str,
+                             out_seg: str):
+    """Crop **original‑resolution** image & segmentation to the NN‑space ROI cube
+    and re‑anchor their affines so that the cube’s (0, 0, 0) voxel now lies at
+    the physical location of the NN cube’s minimum corner.
+
+    Parameters
+    ----------
+    img_path, seg_path : str
+        Paths to the ORIGINAL‑RES autoboxed image and matching segmentation.
+    bbox_nn : ndarray, shape (6,)
+        Bounding‑box tuple (imin, imax, jmin, jmax, kmin, kmax) **in NN space**.
+    affine_nn : ndarray, shape (4, 4)
+        The affine of the NN‑resolution image from which *bbox_nn* was derived.
+    out_img, out_seg : str
+        Output filenames for the cropped & re‑anchored image/segmentation.
+    """
+    # --- 1. Convert NN‑space bbox → world coordinates -----------------------
+    imin, imax, jmin, jmax, kmin, kmax = bbox_nn
+    nn_corners = np.array([[imin, jmin, kmin, 1.0],
+                           [imax, jmax, kmax, 1.0]])
+    world_corners = (affine_nn @ nn_corners.T).T[:, :3]  # (2, 3)
+
+    # --- 2. Map world → ORIGINAL voxel coordinates -------------------------
+    img_nii = nib.load(img_path)
+    seg_nii = nib.load(seg_path)
+    inv_aff = np.linalg.inv(img_nii.affine)
+    orig_vox = (inv_aff @ np.c_[world_corners, np.ones(2)].T).T[:, :3]
+
+    vmin = np.floor(orig_vox[0]).astype(int)
+    vmax = np.ceil(orig_vox[1]).astype(int)
+
+    # Clamp to image bounds
+    vmin = np.maximum(vmin, 0)
+    vmax = np.minimum(vmax, np.array(img_nii.shape) - 1)
+
+    # --- 3. Slice data ------------------------------------------------------
+    slices = tuple(slice(vmin[d], vmax[d] + 1) for d in range(3))
+    img_data = img_nii.get_fdata(dtype=np.float32, caching="unchanged")[slices]
+    seg_data = seg_nii.get_fdata(dtype=np.float32, caching="unchanged").astype(np.uint8)[slices]
+
+    # --- 4. Build new affine (origin at new cube corner) -------------------
+    new_aff = img_nii.affine.copy()
+    vox_sz = img_nii.header.get_zooms()[:3]
+    new_aff[:3, 3] -= vmin * vox_sz
+
+    # --- 5. Save ------------------------------------------------------------
+    nib.Nifti1Image(img_data, new_aff, img_nii.header).to_filename(out_img)
+    seg_hdr = seg_nii.header.copy(); seg_hdr.set_data_dtype(np.uint8)
+    nib.Nifti1Image(seg_data, new_aff, seg_hdr).to_filename(out_seg)

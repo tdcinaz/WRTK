@@ -11,6 +11,8 @@ from geometry_master import (
     compute_skeleton,
     extract_start_and_end_voxels,
     create_cow,
+    filter_out_artery_points,
+    filter_artery_by_radius,
     extract_angles,
 )
 from skimage.morphology import skeletonize
@@ -51,10 +53,16 @@ def pipeline(
     #logging.info(f"++++ : Image {prefix}_{patient_ID} loaded")
 
     skeleton: pv.PolyData = compute_skeleton(nifti_img)
+    
+    filtered_skeleton = filter_out_artery_points(skeleton, 10)
+    refiltered_skeleton: pv.PolyData = filter_out_artery_points(filtered_skeleton, 13)
 
-    extract_start_and_end_voxels(nifti_img, pv_image, skeleton)
+    cleaned_skeleton = filter_artery_by_radius(refiltered_skeleton, 4.0, 0.6)
+    recleaned_skeleton = filter_artery_by_radius(cleaned_skeleton, 6.0, 0.6)
 
-    create_cow(skeleton)
+    extract_start_and_end_voxels(nifti_img, pv_image, recleaned_skeleton)
+
+    create_cow(recleaned_skeleton)
     #network = spline_interpolation(skeleton)
 
     #print(spline_dict)
@@ -66,6 +74,6 @@ def pipeline(
 
     skeleton_file = join(patient_output_path, f"{prefix}_{patient_ID}_skeleton.vtp")
 
-    skeleton.save(skeleton_file)
+    #refiltered_skeleton.save(skeleton_file)
 
-    logging.info(f"Surface extracted and saved to '{skeleton_file}'")
+    #logging.info(f"Surface extracted and saved to '{skeleton_file}'")
