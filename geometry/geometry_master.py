@@ -19,6 +19,7 @@ from scipy.sparse.csgraph import minimum_spanning_tree, dijkstra
 import networkx as nx
 from typing import Tuple
 from functools import cached_property
+from itertools import combinations
 
 def nifti_to_pv_image_data(nifti_img):
     """
@@ -269,8 +270,6 @@ def extract_start_and_end_voxels(nifti_img: nib.Nifti1Image, pv_image: pv.ImageD
     for idx in end_points:
         skeleton_labels[idx] = 1
     skeleton.point_data['CenterlineLabels'] = skeleton_labels
-
-
 
 endpoint_tangents: dict[tuple[float, float, float], np.ndarray] = {}
 
@@ -737,19 +736,37 @@ class Artery:
                 "ERROR Trifurcation"
                 sys.exit(2)
 
+class Point:
+    def __init__(self, label, point, derivative):
+        self.label = label
+        self.point = point
+        self.derivative = derivative
+    
+    def make_derivative_negative(self):
+        self.derivative = -self.derivative
+
 class Connection:
     def __init__(self, point, splines: list):
         self.point = point
         self.splines = splines
-        self.path_points = [path.points for path in self.paths]
-        self.derivatives = [path.derivatives for path in self.paths]
+        _ = self.eval_points
     
     @cached_property
     def paths(self):
-        #returns spline if first or last point is equivalent to the connection point
+        #returns spline if first or last point is equivalent to the connection point, returns none otherwise
         find_spline = lambda spline : spline if np.allclose(spline.points[-1], self.point, atol=1e-2) or np.allclose(spline.points[0], self.point, atol=1e-2) else None
-        paths = [find_spline(spline) for spline in self.splines]
+        paths = [find_spline(spline) for spline in self.splines if find_spline(spline) != None]
         return paths
+    
+    @cached_property
+    def path_points(self):
+        path_points = []
+        for path in self.paths:
+            label = path.label
+            points = [Point(label, point, derivative) for point, derivative in zip(path.points, path.derivatives.T)]
+            path_points.append(points)
+        return path_points
+
 
     @cached_property
     def bifurcation_label(self):
@@ -780,15 +797,48 @@ class Connection:
 
         return bifurcation_label[:-1]
 
+    #points where the derivative is being evaluated at
+    #only saved for graphical purposes
     @cached_property
-    def derivative_points(self):
-        derivative_points = []
-        for points in self.path_points:
-            if np.allclose(points[-1], self.point, atol=1e-2):
+    def eval_points(self):
+        eval_points = []
+        for points, index in zip(self.path_points, range(len(self.path_points))):
+            if np.allclose(points[-1].point, self.point, atol=1e-2):
                 points = np.flip(points, axis=0)
-            derivative_point = points[6]
-            derivative_points.append(derivative_point)
-        return derivative_points
+                for point in points:
+                    point.make_derivative_negative()
+                self.path_points[index] = points
+            eval_point = points[6].point
+            derivative = points[6].derivative
+            eval_points.append(Point(points[0].label, eval_point, derivative))
+        return eval_points
+    
+    @cached_property
+    def angles(self):
+        #finds angle based on dot product of two vectors
+        pairs = list(combinations(self.eval_points, 2))
+
+        vessel_labels = {
+            1.0: "Basillar",
+            2.0: "L-PCA",
+            3.0: "R-PCA",
+            4.0: "L-ICA",
+            5.0: "L-MCA",
+            6.0: "R-ICA",
+            7.0: "R-MCA",
+            8.0: "L-Pcom",
+            9.0: "R-Pcom",
+            10.0: "Acom",
+            11.0: "L-ACA",
+            12.0: "R-ACA",
+            13.0: "3rd A2"
+        }
+
+        angles = []
+        for pair in pairs:
+            label = f"{vessel_labels[pair[0].label]}/{vessel_labels[pair[1].label]}"
+            angles.append(Angles([pair[0].point, pair[1].point], [pair[0].derivative, pair[1].derivative], label))
+        return angles
 
 class Spline:
     def __init__(self, trunk_or_branch: str, obj):
@@ -807,6 +857,18 @@ class Spline:
         self.curve = pv.PolyData(self.points, lines=self.cells)
         self.label = obj.label
 
+class Angles:
+    def __init__(self, eval_points, derivatives, bifurcation_label):
+        self.eval_points = eval_points
+        self.derivatives = derivatives
+        self.bifurcation_label = bifurcation_label
+
+    @cached_property
+    def angle(self):
+        find_angle = lambda pair : np.degrees(np.arccos(((np.dot(pair[0], pair[1])) / (np.linalg.norm(pair[0]) * np.linalg.norm(pair[1])))))
+        angle = round(find_angle(self.derivatives), 2)
+        return angle
+
 class COW:
     def __init__(self, skeleton: pv.PolyData):
         self.skeleton = skeleton
@@ -824,6 +886,9 @@ class COW:
         self.combine_arteries()
         self.connections = []
         self.get_connections()
+
+        #for connection in self.connections:
+        #   print(connection.angles)
 
     @cached_property
     def all_splines(self):
@@ -951,43 +1016,65 @@ class COW:
                     #print(part3.ords)
 
     def graph_arteries(self):
-        derivative_points = np.empty((0, 3))
+        eval_points = np.empty((0, 3))
+        derivatives = np.empty((0, 3))
+        #grabbing all points being evaluated and their evaluation points
         for connection in self.connections:
-            points = connection.derivative_points
+            points = connection.eval_points
             for point in points:
-                derivative_points = np.vstack((derivative_points, point))
+                eval_points = np.vstack((eval_points, point.point))
+                derivatives = np.vstack((derivatives, point.derivative))
+
+        #merging all splines into one network
         for spline in self.all_splines:
             self.network.merge(spline.curve, inplace=True)
 
         p = pv.Plotter()
+
+        #plotting derivative vectors
+        for derivative, eval_point in zip(derivatives, eval_points):
+            arrow = pv.Arrow(start=eval_point, direction=(derivative * 3), scale=1)
+            p.add_mesh(arrow, color='red')
+
+        #plotting arcs
+        for connection in self.connections:
+            center_point = connection.point
+            angles = connection.angles
+            for angle in angles:
+                pair = angle.eval_points
+
+                vec1 = pair[0] - center_point
+                vec2 = pair[1] - center_point
+                
+                dist1 = np.linalg.norm(vec1)
+                dist2 = np.linalg.norm(vec2)
+
+                target_radius = ((dist1 + dist2) / 2) * 2
+
+                projected_p1 = center_point + (vec1 / dist1) * target_radius
+                projected_p2 = center_point + (vec2 / dist2) * target_radius
+
+                arc = pv.CircularArc(pointa=projected_p1, pointb=projected_p2, center=center_point)
+
+                label_point = arc.points[int(len(arc.points) / 2)]
+                
+                p.add_point_labels([label_point], [f"{angle.bifurcation_label}: {angle.angle}"], font_size=12, text_color='black')
+
+                p.add_mesh(arc, color='black', line_width=3)
+
+        
+
+        
+
         p.add_mesh(self.skeleton, render_points_as_spheres=True, point_size=5, color="lightgray")
         p.add_mesh(self.network, color="dodgerblue", line_width=4, label="Weighted smoothing spline")
         point_cloud = [connection.point for connection in self.connections]
-        derivative_point_cloud = pv.PolyData(derivative_points)
+        derivative_point_cloud = pv.PolyData(eval_points)
         p.add_mesh(derivative_point_cloud, color = 'purple', point_size=10, render_points_as_spheres=True)
         p.add_mesh(pv.PolyData(point_cloud), color='red', point_size=10, render_points_as_spheres=True)
         p.add_legend()
         p.show()
-        
-    def angle_test(self):
-        for trunk in self.trunks.values():
-            n_samples = 200
-            pts = smooth_trunk(trunk.ords, trunk.spheres, n_samples=n_samples)
             
-
-        for trunk2 in self.trunks2.values():
-            n_samples = 200
-            pts = smooth_trunk2(trunk2.ords, trunk2.spheres, n_samples=n_samples, h_fraction=0.05, tan_strength=0.01)
-            
-
-        for branch in self.branches.values():
-            n_samples = 200
-            pts = smooth_branch(branch.ords, branch.spheres, n_samples=n_samples, h_fraction=0.01, tan_strength=0.01)
-            
-    def get_angles(self):
-
-        return
-
 def find_last_shared_point(path1, path2):
     #find points assosiated with each branching path
     path1_pts = path1.pts_reordered
@@ -1033,7 +1120,6 @@ def create_cow(
     test_cow = COW(skeleton)
 
     test_cow.graph_arteries()
-    test_cow.get_angles()
     return test_cow
 
 

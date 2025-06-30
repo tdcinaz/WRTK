@@ -4,7 +4,7 @@ import os
 from os.path import join
 import logging
 import pyvista as pv
-import pymeshfix
+#import pymeshfix
 from geometry_master import (
     compute_label_volumes,
     nifti_to_pv_image_data,
