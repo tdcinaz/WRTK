@@ -742,17 +742,13 @@ class Connection:
         self.point = point
         self.splines = splines
         self.path_points = [path.points for path in self.paths]
-        self.derivative_pts = []
-        self.derivatives = []
+        self.derivatives = [path.derivatives for path in self.paths]
     
     @cached_property
     def paths(self):
-        path_list = []
-        for spline in self.splines:
-            points = spline.points
-            if np.allclose(points[-1], self.point, atol=1e-2) or np.allclose(points[0], self.point, atol=1e-2):
-                path_list.append(spline)
-        paths = path_list
+        #returns spline if first or last point is equivalent to the connection point
+        find_spline = lambda spline : spline if np.allclose(spline.points[-1], self.point, atol=1e-2) or np.allclose(spline.points[0], self.point, atol=1e-2) else None
+        paths = [find_spline(spline) for spline in self.splines]
         return paths
 
     @cached_property
@@ -990,18 +986,7 @@ class COW:
             
     def get_angles(self):
 
-        #trunks = self.trunks
-        #for key in trunks.keys():
-        #    print(trunks[key].length)
-
         return
-
-
-
-        #unique_values, counts = np.unique(connection_points, return_counts=True)
-
-        #for value, count in zip(unique_values, counts):
-        #    print(f"{value}:{count}")
 
 def find_last_shared_point(path1, path2):
     #find points assosiated with each branching path
