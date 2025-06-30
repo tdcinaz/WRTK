@@ -183,6 +183,11 @@ def main():
                 shutil.move(join(args.output, "nn_space", (f"topcow_mr_cropped_{args.patient_ID}.nii.gz")), mr_folder)
                 shutil.move(join(args.output, "nn_space", (f"topcow_mr_cropped_seg_{args.patient_ID}.nii.gz")), mr_folder)
                 shutil.move(join(args.output, "nn_space", (f"topcow_ct_aligned_cube_{args.patient_ID}.nii.gz")), mr_folder)
+
+                shutil.move(join(args.output, "original_space", (f"topcow_ct_cube_orig_{args.patient_ID}.nii.gz")), ct_folder)
+                shutil.move(join(args.output, "original_space", (f"topcow_ct_cube_orig_seg_{args.patient_ID}.nii.gz")), ct_folder)
+                shutil.move(join(args.output, "original_space", (f"topcow_mr_cube_orig_{args.patient_ID}.nii.gz")), mr_folder)
+                shutil.move(join(args.output, "original_space", (f"topcow_mr_cube_orig_seg_{args.patient_ID}.nii.gz")), mr_folder)
                 shutil.rmtree(args.output)
             except:
                 print("ERROR: ", scan)
