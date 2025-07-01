@@ -62,7 +62,7 @@ def pipeline(
 
     extract_start_and_end_voxels(nifti_img, pv_image, recleaned_skeleton)
 
-    create_cow(recleaned_skeleton)
+    create_cow(recleaned_skeleton, patient_ID)
     #network = spline_interpolation(skeleton)
 
     #print(spline_dict)

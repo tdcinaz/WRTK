@@ -125,6 +125,7 @@ def main():
         "willis_sphere_down.nii.gz",
         "SSS_masked_down.nii.gz",
     ]
+    
     template_folder = os.listdir(args.template_path)
     for t in template_mni:
         assert t in template_folder, (

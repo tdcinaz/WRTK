@@ -31,6 +31,11 @@ def parse_arguments() -> argparse.Namespace:
         "output",
         help="Defines the output folder.",
     )
+    parser.add_argument(
+        "-b",
+        "--batch_mode",
+        action="store_true"
+    )
 
     args = parser.parse_args()
 
@@ -38,8 +43,17 @@ def parse_arguments() -> argparse.Namespace:
 
 def main():
     args = parse_arguments()
-    logging.info(f"Patient ID: {args.patient_ID}")
-    pipeline(args, prefix="topcow")
+    
+    if args.batch_mode:
+        all_files = sorted(os.listdir("training/labelsTr"))
+        for file in all_files:
+            args.patient_ID = file.split(".")[0][-3:]
+            try:
+                pipeline(args, prefix="topcow")
+            except:
+                continue
+    else:
+        pipeline(args, prefix="topcow")
     
 
 if __name__ == "__main__":

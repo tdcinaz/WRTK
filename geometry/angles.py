@@ -1,126 +1,120 @@
-import numpy as np
 import pyvista as pv
-from scipy.interpolate import BSpline
-from collections import defaultdict, deque
 
 
-# 1. Apply Vessel Enhancing Diffusion
-#--------Use eICAB filter from ComputeVED
+array1 = [[33.28125, 32.03125, 37.96875],
+ [33.125,   32.1875 , 38.125  ],
+ [33.125 ,  32.5    , 38.4375 ],
+ [33.4375 , 32.8125 , 38.75   ],
+ [33.4375,  33.125  , 38.75   ],
+ [33.4375 , 33.4375 , 39.0625 ],
+ [33.75  ,  33.75   , 39.375  ],
+ [34.0625 , 33.75   , 39.6875 ],
+ [34.0625 , 33.4375 , 40.     ],
+ [34.0625 , 33.125  , 40.3125 ],
+ [34.375  , 32.8125 , 40.625  ],
+ [34.6875 , 32.5    , 40.9375 ],
+ [34.6875 , 32.1875 , 40.9375 ],
+ [34.6875 , 31.875  , 40.9375 ],
+ [34.6875 , 31.5625 , 41.25   ],
+ [35.     , 31.25   , 41.5625 ],
+ [35.     , 31.25   , 41.875  ],
+ [34.6875 , 31.25   , 42.1875 ],
+ [35.     , 30.9375 , 42.5    ],
+ [35.     , 30.9375 , 42.8125 ],
+ [35.3125 , 30.9375 , 43.125  ],
+ [35.3125 , 30.9375 , 43.4375 ],
+ [35.3125 , 30.625  , 43.75   ],
+ [35.3125 , 30.625  , 44.0625 ],
+ [35.3125 , 30.625  , 44.375  ],
+ [35.3125 , 30.625  , 44.6875 ],
+ [35.3125 , 30.3125 , 45.     ],
+ [35.3125 , 30.3125 , 45.3125 ],
+ [35.3125 , 30.3125 , 45.625  ],
+ [35.625  , 30.3125 , 45.9375 ],
+ [35.9375 , 30.3125 , 45.9375 ],
+ [36.25   , 30.3125 , 46.25   ],
+ [36.5625 , 30.625  , 46.5625 ],
+ [36.5625 , 30.9375 , 46.875  ],
+ [36.5625 , 30.9375 , 47.1875 ],
+ [36.5625 , 30.9375 , 47.5    ],
+ [36.5625 , 30.9375 , 47.8125 ],
+ [36.25   , 30.9375 , 48.125  ],
+ [36.25   , 30.9375 , 48.4375 ],
+ [35.9375 , 30.9375 , 48.75   ],
+ [36.25   , 31.25   , 49.0625 ],
+ [36.25   , 31.25   , 49.375  ]]
 
-# 2. Skeletonize complete artery network
+array2 = [[39.21875, 30.3125,  45.46875],
+ [39.0625 , 30.3125 , 45.625  ],
+ [38.75   , 30.3125 , 45.625  ],
+ [38.4375 , 30.3125 , 45.625  ],
+ [38.125  , 30.3125 , 45.9375 ],
+ [37.8125 , 30.3125 , 45.9375 ],
+ [37.5    , 30.3125 , 45.9375 ],
+ [37.1875 , 30.3125 , 46.25   ],
+ [36.875  , 30.3125 , 46.25   ],
+ [36.5625 , 30.625  , 46.5625 ],
+ [36.25   , 30.3125 , 46.25   ],
+ [35.9375 , 30.3125 , 45.9375 ],
+ [35.625  , 30.3125 , 45.9375 ],
+ [35.3125 , 30.3125 , 45.625  ],
+ [35.3125 , 30.3125 , 45.3125 ],
+ [35.3125 , 30.3125 , 45.     ],
+ [35.3125 , 30.625  , 44.6875 ],
+ [35.3125 , 30.625  , 44.375  ],
+ [35.3125 , 30.625  , 44.0625 ],
+ [35.3125 , 30.625  , 43.75   ],
+ [35.3125 , 30.9375 , 43.4375 ],
+ [35.3125 , 30.9375 , 43.125  ],
+ [35.     , 30.9375 , 42.8125 ],
+ [35.     , 30.9375 , 42.5    ],
+ [34.6875 , 31.25   , 42.1875 ],
+ [35.     , 31.25   , 41.875  ],
+ [35.     , 31.25   , 41.5625 ],
+ [34.6875 , 31.5625 , 41.25   ],
+ [34.6875 , 31.875  , 40.9375 ],
+ [34.6875 , 32.1875 , 40.9375 ],
+ [34.6875 , 32.5    , 40.9375 ],
+ [34.375  , 32.8125 , 40.625  ],
+ [34.0625 , 33.125  , 40.3125 ],
+ [34.0625 , 33.4375 , 40.     ],
+ [34.0625 , 33.75  ,  39.6875 ],
+ [33.75   , 33.75  ,  39.375  ],
+ [34.0625 , 34.0625 , 39.375  ],
+ [34.0625 , 34.375  , 39.0625 ],
+ [33.75   , 34.6875 , 38.75   ],
+ [33.75   , 35.     , 38.75   ],
+ [33.75   , 35.3125 , 38.75   ],
+ [33.4375 , 35.625  , 38.75   ],
+ [33.4375 , 35.9375 , 38.4375 ],
+ [33.4375 , 36.25   , 38.4375 ],
+ [33.125  , 36.5625 , 38.125  ],
+ [33.125  , 36.875  , 38.125  ],
+ [33.125  , 37.1875 , 38.125  ],
+ [32.8125 , 37.5    , 38.4375 ],
+ [32.8125 , 37.8125 , 38.4375 ],
+ [32.8125 , 38.125 ,  38.4375 ],
+ [32.8125 , 38.4375 , 38.125  ],
+ [32.8125 , 38.75   , 38.125  ],
+ [32.5    , 39.0625,  38.125  ],
+ [32.5    , 39.375  , 38.125  ],
+ [32.5    , 39.6875 , 38.125  ],
+ [32.5    , 40.     , 38.125  ],
+ [32.8125 , 40.3125 , 38.125  ],
+ [32.5    , 40.625  , 38.4375 ],
+ [32.8125 , 40.9375 , 38.4375 ],
+ [32.8125 , 41.25   , 38.4375 ],
+ [32.5    , 41.5625 , 38.75   ],
+ [32.1875 , 41.875  , 38.75   ],
+ [32.1875 , 42.1875 , 38.75   ],
+ [32.5    , 42.5    , 38.75   ],
+ [32.8125 , 42.5    , 39.0625 ]]
 
-# 3. Find largest radius spheres
+points1 = pv.PolyData(array1)
+points2 = pv.PolyData(array2)
 
-# 4. Label centerline voxels based on parent arteries
+p = pv.Plotter()
 
-# 5. Label start and end voxels
-#--------Use SurfaceNets3D to identify connection points
-
-# 6. Isolate individual arteries
-
-# 7. Detect and trim loops
-
-# 8. Path finding
-
-# 9. Curve fitment
-
-# 10. Network reassembly
-
-# 11. Angle Calculation
-def extract_angles(splines, in_file):
-    
-    #extract mesh from vtp file
-    points = pv.wrap(in_file)
-
-    #indices of all end points
-    end_pts = [point for point in points.point_data if point["CenterlineLabels"] == 1] #not sure what the label is
-    
-    standardAdj = {
-        1.0: (2.0, 3.0),            # Bas -> L-PCA, R-PCA
-        2.0: (1.0, 8.0),            # L-PCA -> Bas, L-Pcom
-        3.0: (1.0, 9.0),            # R-PCA -> Bas, R-Pcom
-        4.0: (5.0, 8.0, 11.0),      # L-ICA -> L-MCA, L-Pcom, L-ACA
-        5.0: (4.0,),                # L-MCA -> L-ICA
-        6.0: (7.0, 9.0, 12.0),      # R-ICA -> R-MCA, R-Pcom, R-ACA
-        7.0: (6.0,),                # R-MCA -> R-ICA
-        8.0: (2.0, 4.0),            # L-Pcom -> L-PCA, L-ICA
-        9.0: (3.0, 6.0),            # R-Pcom -> R-PCA, R-ICA
-        10.0: (11.0, 12.0),         # Acom -> L-ACA, R-ACA
-        11.0: (4.0,),               # L-ACA -> L-ICA
-        12.0: (6.0,)                # R-ACA -> R-ICA
-    }
-
-    vessel_labels = {
-        1.0: "Basillar",
-        2.0: "L-PCA",
-        3.0: "R-PCA",
-        4.0: "L-ICA",
-        5.0: "L-MCA",
-        6.0: "R-ICA",
-        7.0: "R-MCA",
-        8.0: "L-Pcom",
-        9.0: "R-Pcom",
-        10.0: "Acom",
-        11.0: "L-ACA",
-        12.0: "R-ACA",
-    }
-
-    angle_pairs = []
-
-    #make all pairs of angles that intersect one another
-    for key in standardAdj.keys():
-        for vessel in standardAdj[key]:
-            pair = [key, vessel]
-            if [vessel, key] not in angle_pairs:
-                angle_pairs.append(pair)
-
-    angles = {}
-
-    for pair in angle_pairs:
-        #vessel1 is the first index in the pair list, vessel2 is the second    
-        vessel1 = pair[0]
-        vessel2 = pair[1]
-        #if a vessel is missing then skip
-        if vessel1 not in splines.keys() or vessel2 not in splines.keys():
-            continue
-        
-        #find end points of vessels
-        points1 = np.array([point for point in end_pts if point["Artery"] == vessel1])
-        points2 = np.array([point for point in end_pts if point["Artery"] == vessel2])
-        
-        #choose the end points that are closest together for the two vessels
-        prev_distance = 1000000
-        for point1 in points1:
-            for point2 in points2:
-                distance = np.linalg.norm(point1 - point2)
-                if distance < prev_distance:
-                    index1 = points1.index(point1)
-                    index2 = points2.index(point2)
-                prev_distance = distance
-
-        end_pt1 = points1[index1]
-        end_pt2 = points2[index2]
-
-        #find spline for each vessel
-        spline1 = splines[f"{vessel1}:{vessel2}"]
-        spline2 = splines[f"{vessel2}:{vessel1}"]
-
-        #tangent vectors
-        tan_vector1 = spline1(end_pt1, nu=1)
-        tan_vector2 = spline2(end_pt2, nu=1)
-
-        dot_product = np.dot(tan_vector1, tan_vector2)
-
-        mag1 = np.linalg.norm(tan_vector1)
-        mag2 = np.linalg.norm(tan_vector2)
-
-        #use dot product to find angle
-        cos = (dot_product) / (mag1 * mag2)
-        angle = np.arccos(np.clip(cos, -1, 1))
-        
-        #append angle to dictionary with names of vessels as the key
-        angles[f"{vessel_labels[vessel1]}/{vessel_labels[vessel2]}"] = angle
-
-    return angles
-
-# 12. Data export
+p.add_mesh(points1, color ='blue')
+p.add_mesh(points2, color='red')
+p.show()
