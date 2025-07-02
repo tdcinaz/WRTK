@@ -21,6 +21,7 @@ from typing import Tuple
 from functools import cached_property
 from itertools import combinations
 import csv
+import networkx as nx
 
 class Image:
     def __init__(self, file_path):
@@ -97,6 +98,7 @@ class Skeleton(pv.PolyData):
         self.point_data['Radius'] = self.radii_mm.flatten()
         self.point_data["Artery"] = self.labels.flatten()
         self._extract_start_and_end_voxels()
+        
         
     def _compute_points(self):
         points = []
@@ -198,7 +200,6 @@ class Skeleton(pv.PolyData):
         filtered_points = self.points[keep_ids]
         filtered_radius = self.point_data['Radius'][keep_ids]
         filtered_artery = self.point_data['Artery'][keep_ids]
-        filtered_connection_labels = self.point_data['ConnectionLabel'][keep_ids]
         
         # Create a completely new Skeleton object
         # We bypass the normal __init__ to avoid recomputing from image
@@ -211,7 +212,8 @@ class Skeleton(pv.PolyData):
         new_skeleton.image = self.image
         new_skeleton.point_data['Radius'] = filtered_radius
         new_skeleton.point_data['Artery'] = filtered_artery
-        new_skeleton.point_data['ConnectionLabel'] = filtered_connection_labels
+        #might be kind of expensive to just remove two points
+        new_skeleton._extract_start_and_end_voxels()
         
         return new_skeleton
 
@@ -267,7 +269,6 @@ class Skeleton(pv.PolyData):
         filtered_points = self.points[keep_ids]
         filtered_radius = self.point_data['Radius'][keep_ids]
         filtered_artery = self.point_data['Artery'][keep_ids]
-        filtered_connection_labels = self.point_data['ConnectionLabel'][keep_ids]
         
         # Create a completely new Skeleton object
         # We bypass the normal __init__ to avoid recomputing from image
@@ -280,7 +281,7 @@ class Skeleton(pv.PolyData):
         new_skeleton.image = self.image
         new_skeleton.point_data['Radius'] = filtered_radius
         new_skeleton.point_data['Artery'] = filtered_artery
-        new_skeleton.point_data['ConnectionLabel'] = filtered_connection_labels
+        new_skeleton._extract_start_and_end_voxels()
         
         return new_skeleton
 
@@ -339,7 +340,56 @@ class Skeleton(pv.PolyData):
         self.point_data['ConnectionLabel'] = skeleton_labels
     
 class OrderedSkeleton(Skeleton):
-    def __init__(self):
+    @classmethod
+    def create_from_parent(cls, skeleton_instance: Skeleton):
+        instance = cls.__new__(cls)
+
+        ordered_points = cls._order_points(skeleton_instance)
+
+        #do not copy connection points array, radius array, or label array as they will be unordered
+
+        pv.PolyData.__init__(instance, ordered_points)
+
+
+        #instance.__dict__.update(skeleton_instance.__dict__)
+
+        return instance
+
+
+    def __init__(self, image: Image):
+        #super().__init__(i)
+        return
+
+    @staticmethod
+    def _order_points(skeleton : Skeleton):
+        #create temporary polydata object to insert ordered points intp
+        temp_polydata = pv.PolyData()
+
+        #figure out what arteries are present in specific patient
+        present_arteries = np.unique(skeleton.point_data['Artery']).flatten()
+
+        for present_artery in present_arteries:
+            
+            keep_mask = np.ones(len(skeleton.points), dtype=bool)
+
+            #performs boolean operation to check where the point label matches the target artery label
+            keep_mask &= (skeleton.point_data['Artery'] == present_artery)
+
+            #find where all the labels match
+            artery_indexes = np.where(keep_mask)[0]
+
+            #find the actual points
+            artery_points = skeleton.points[artery_indexes]
+
+            #make networkX graph object
+            graph = nx.Graph()
+
+            #fill nodes of the graph
+            for i, (x, y, z) in enumerate(artery_points):
+                graph.add_node(i, pos=(x,y,z), x=x, y=y, z=z)
+
+            minimum_spanning_tree = nx.minimum_spanning_tree(graph, algorithm="kruskal")
+
         return
 
 class CenterlineNetwork(OrderedSkeleton):
