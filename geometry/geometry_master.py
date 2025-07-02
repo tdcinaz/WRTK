@@ -22,254 +22,329 @@ from functools import cached_property
 from itertools import combinations
 import csv
 
-def nifti_to_pv_image_data(nifti_img):
-    """
-    Convert a 3D NIfTI image to vtkImageData.
+class Image:
+    def __init__(self, file_path):
+        self.file_path = file_path
 
-    Args:
+        self.nifti_img: nib.Nifti1Image = nib.load(self.file_path)
+
+        # Get the NumPy array from the NIfTI
+        self.data_array = self.nifti_img.get_fdata(dtype=np.float32)
+
+        # Retrieve voxel spacing from the header
+        #    If it's a 4D image, nibabel header might return 4 zooms, so we take only the first three.
+        self.pix_dim = self.nifti_img.header.get_zooms()[:3]
+
+        # Extract the translation (origin) from the affine
+        self.origin = self.nifti_img.affine[:3, 3]
+
+    @cached_property
+    def pv_image(self):
+        """
+        Convert a 3D NIfTI image to vtkImageData.
+
+        Args:
         nifti_img (nibabel.Nifti1Image): The input NIfTI image.
 
-    Returns:
-        pv.ImageData: The image data in pyvista format.
-    """
-    # 1) Get the NumPy array from the NIfTI
-    data_array = nifti_img.get_fdata(dtype=np.float32)
+        Returns:
+            pv.ImageData: The image data in pyvista format.
+        """
 
-    # Ensure it's contiguous in memory
-    data_array = np.ascontiguousarray(data_array)
-
-    # 2) Retrieve voxel spacing from the header
-    #    If it's a 4D image, nibabel header might return 4 zooms, so we take only the first three.
-    pixdim = nifti_img.header.get_zooms()[:3]
-
-    # 3) Extract the translation (origin) from the affine
-    origin = nifti_img.affine[:3, 3]
-
-    # 4) Create pyvista ImageData
-
-    pv_image = pv.ImageData(
-        dimensions=data_array.shape, 
-        spacing=(pixdim[2], pixdim[1], pixdim[0]), 
-        origin=(origin[2], origin[1], origin[0]),
+        pv_image = pv.ImageData(
+        dimensions=self.data_array.shape, 
+        spacing=(self.pix_dim[2], self.pix_dim[1], self.pix_dim[0]), 
+        origin=(self.origin[2], self.origin[1], self.origin[0]),
         deep=True)
     
-    pv_image.point_data["Scalars"] = data_array.flatten()
+        pv_image.point_data["Scalars"] = self.data_array.flatten()
 
-    return pv_image
-
-def compute_label_volumes(img, label_range=range(1, 14)):
-    # Load the image
-    data = img.get_fdata()
+        return pv_image
     
-    # Get the voxel size from the header (voxel volume in mm³)
-    voxel_volume = np.prod(img.header.get_zooms())
-    print(f"Voxel volume: {voxel_volume:.2f} mm³")
+    def compute_label_volumes(self, label_range=range(1, 14)):
+        
+        # Get the voxel size from the header (voxel volume in mm³)
+        voxel_volume = np.prod(self.pix_dim)
+        print(f"Voxel volume: {voxel_volume:.2f} mm³")
+        
+        # Compute volumes for each label
+        volumes = {}
+        for label in label_range:
+            voxel_count = np.sum(self.data_array == label)
+            volumes[label] = voxel_count * voxel_volume
 
-    # Compute volumes for each label
-    volumes = {}
-    for label in label_range:
-        voxel_count = np.sum(data == label)
-        volumes[label] = voxel_count * voxel_volume
+        return volumes
 
-    return volumes
+    #convenience method to create a skeleton from the image object directly
+    def create_skeleton(self):
+        return Skeleton(self)
 
-def compute_skeleton(nifti_img: nib.Nifti1Image):
-    data_array = nifti_img.get_fdata()
-    affine = nifti_img.affine
-    voxel_spacing = nifti_img.header.get_zooms()
+    def plot_image(self):
+        p = pv.Plotter()
+        p.add_mesh(self.pv_image)
+        p.show()
 
-    new_data_array = np.repeat(np.repeat(np.repeat(data_array, 2, axis=0), 2, axis=1), 2, axis=2)
-    new_affine = nifti_img.affine.copy()
-    new_hdr = nifti_img.header.copy()
+class Skeleton(pv.PolyData):
+    def __init__(self, image: Image):
+        self.image = image
 
-    new_affine[:3, :3] /= 2.0
-    new_hdr.set_zooms(tuple(z/2 for z in voxel_spacing[:3]) + voxel_spacing[3:])
-    new_voxel_spacing = new_hdr.get_zooms()
+        #compute points for skeleton
+        points = self._compute_points()
 
-    distance_map = distance_transform_edt(new_data_array, sampling=new_voxel_spacing)
+        #inherit from polydata object
+        super().__init__(points)
 
+        #set attributes radius, artery, and connection points
+        self.point_data['Radius'] = self.radii_mm.flatten()
+        self.point_data["Artery"] = self.labels.flatten()
+        self._extract_start_and_end_voxels()
+        
+    def _compute_points(self):
+        points = []
+        data_array = self.image.data_array
+        voxel_spacing = self.image.pix_dim
 
-    skeleton = skeletonize(new_data_array)
-    if not np.any(skeleton):
-        print("  Skeletonization failed.")
+        #Subdividing voxels in two on each axis
+        new_data_array = np.repeat(np.repeat(np.repeat(data_array, 2, axis=0), 2, axis=1), 2, axis=2)
+        new_affine = self.image.nifti_img.affine.copy()
+        new_hdr = self.image.nifti_img.header.copy()
+
+        new_affine[:3, :3] /= 2.0
+        new_hdr.set_zooms(tuple(z/2 for z in voxel_spacing[:3]) + voxel_spacing[3:])
+        new_voxel_spacing = new_hdr.get_zooms()
+
+        #Find distance between any point in subdivided skeleton and background
+        distance_map = distance_transform_edt(new_data_array, sampling=new_voxel_spacing)
+
+        #creates the skeleton
+        skeleton = skeletonize(new_data_array)
+
+        if not np.any(skeleton):
+            print("  Skeletonization failed.")
+            return
+        
+        #extract only voxels in the skeleton
+        self.radii_mm = distance_map[skeleton > 0]
+        self.labels = new_data_array[skeleton > 0]
+        zyx_coords = np.array(np.where(skeleton > 0)).T
+
+        homogeneous_coords = np.c_[zyx_coords[:, ::-1], np.ones(len(zyx_coords))]  # (x, y, z, 1)
+        points = (new_affine @ homogeneous_coords.T).T[:, :3]
+
+        return points
+    
+    def plot(self):
+        p = pv.Plotter()
+        p.add_mesh(self.points)
+
+        skeleton_connection_labels = np.nonzero(self.point_data['ConnectionLabel'])
+
+        connection_points = self.points[skeleton_connection_labels]
+        p.add_mesh(connection_points, color='purple')
+        p.show()
+
         return
+
+    def filter_out_artery_points(self, arteries_to_remove: list, atol: float = 1e-6):
+        """
+            Return a copy of *mesh* with every point whose ``Artery`` value equals
+            *artery_to_remove* (within *atol*) removed.
+
+            Parameters
+            ----------
+            mesh : pyvista.PolyData
+                The input mesh.  Must contain a point-data array named ``"Artery"``.
+            artery_to_remove : float
+                The artery label to filter out (e.g., ``10.0``).
+            atol : float, optional
+                Absolute tolerance when comparing floating-point values.
+                Defaults to ``1 × 10⁻⁶``.
+
+            Returns
+            -------
+            pyvista.PolyData
+                A new mesh that no longer contains the specified artery’s points
+                (and any cells that depended on them).
+
+            Raises
+            ------
+            KeyError
+                If the mesh lacks an ``"Artery"`` point-data array.
+            ValueError
+                If no points remain after filtering.
+        """
+
+        # --- sanity checks --------------------------------------------------------
+        if "Artery" not in self.point_data:
+                raise KeyError("Point-data array 'Artery' not found in the mesh.")
+        
+        arteries = np.asarray(self.point_data["Artery"])
+
+        keep_mask = np.ones(len(arteries), dtype=bool)       # keep ≠ target
+        
+        if np.isscalar(arteries_to_remove):
+            arteries_to_remove = [arteries_to_remove]
+
+        for artery_to_remove in arteries_to_remove:
+            #bitwise operation checks where both the mask and the artery that isn't supposed to be removed is true
+            keep_mask &= (np.abs(arteries - artery_to_remove) > atol)
+
+        keep_ids  = np.where(keep_mask)[0]
+
+        if keep_ids.size == 0:
+            raise ValueError("Filtering removed every point; nothing left to return.")
+
+        # --- extract the surviving points & associated cells ----------------------
+
+        filtered_points = self.points[keep_ids]
+        filtered_radius = self.point_data['Radius'][keep_ids]
+        filtered_artery = self.point_data['Artery'][keep_ids]
+        filtered_connection_labels = self.point_data['ConnectionLabel'][keep_ids]
+        
+        # Create a completely new Skeleton object
+        # We bypass the normal __init__ to avoid recomputing from image
+        new_skeleton = self.__class__.__new__(self.__class__)
+        
+        # Initialize the PyVista PolyData part with clean data
+        pv.PolyData.__init__(new_skeleton, filtered_points)
+        
+        # Set the required attributes
+        new_skeleton.image = self.image
+        new_skeleton.point_data['Radius'] = filtered_radius
+        new_skeleton.point_data['Artery'] = filtered_artery
+        new_skeleton.point_data['ConnectionLabel'] = filtered_connection_labels
+        
+        return new_skeleton
+
+    def filter_artery_by_radius(self, arteries_to_remove: list, radius_min: float, atol: float = 1e-6):
+        """
+        Return a copy of *mesh* with points from a given artery removed if their
+        ``Radius`` value is below ``radius_min``.
+
+        Parameters
+        ----------
+        mesh : pyvista.PolyData
+            Input mesh. Must contain point-data arrays ``"Artery"`` and ``"Radius"``.
+        artery_labels : list of float
+            The artery whose thin points you want to eliminate (e.g. ``10.0``).
+        radius_min : float
+            Minimum allowable radius. Points in the chosen artery with a radius
+            **< radius_min** are discarded. In Python, the tilde symbol ~ primarily represents the bitwise NOT operator. This operator is a unary operator, meaning it operates on a single operand. 
+
+
+        Raises
+        ------
+        KeyError
+            If required data arrays are missing.
+        ValueError
+            If all points are removed.
+        """
+        # --- sanity checks --------------------------------------------------------
+        for name in ("Artery", "Radius"):
+            if name not in self.point_data:
+                raise KeyError(f"Point-data array '{name}' not found in the mesh.")
+
+        if np.isscalar(arteries_to_remove):
+            arteries_to_remove = [arteries_to_remove]
+        
+        arteries = np.asarray(self.point_data["Artery"])
+        radii    = np.asarray(self.point_data["Radius"])
+
+        keep_mask = np.ones(len(arteries), dtype=bool)
+
+        for artery_to_remove in arteries_to_remove:
+            
+            #only keep labels where the artery isn't a target artery and where the radius is smaller than the minimum radius
+            #keep where NOT (NOT target artery AND radius is smaller than minimum radius)
+            keep_mask &= ~(~(np.abs(arteries - artery_to_remove) > atol) & (radii < radius_min))
+
+
+        keep_ids = np.where(keep_mask)[0]
+
+        if keep_ids.size == 0:
+            raise ValueError("Filtering removed every point; nothing left to return.")
+        # --- extract the surviving points & associated cells ----------------------
+
+        filtered_points = self.points[keep_ids]
+        filtered_radius = self.point_data['Radius'][keep_ids]
+        filtered_artery = self.point_data['Artery'][keep_ids]
+        filtered_connection_labels = self.point_data['ConnectionLabel'][keep_ids]
+        
+        # Create a completely new Skeleton object
+        # We bypass the normal __init__ to avoid recomputing from image
+        new_skeleton = self.__class__.__new__(self.__class__)
+        
+        # Initialize the PyVista PolyData part with clean data
+        pv.PolyData.__init__(new_skeleton, filtered_points)
+        
+        # Set the required attributes
+        new_skeleton.image = self.image
+        new_skeleton.point_data['Radius'] = filtered_radius
+        new_skeleton.point_data['Artery'] = filtered_artery
+        new_skeleton.point_data['ConnectionLabel'] = filtered_connection_labels
+        
+        return new_skeleton
+
+    def _extract_start_and_end_voxels(self):
+        standardAdj = {
+            1.0: (2.0, 3.0),            # Bas -> L-PCA, R-PCA
+            2.0: (1.0, 8.0),            # L-PCA -> Bas, L-Pcom
+            3.0: (1.0, 9.0),            # R-PCA -> Bas, R-Pcom
+            4.0: (5.0, 8.0, 11.0),      # L-ICA -> L-MCA, L-Pcom, L-ACA
+            5.0: (4.0,),                # L-MCA -> L-ICA
+            6.0: (7.0, 9.0, 12.0),      # R-ICA -> R-MCA, R-Pcom, R-ACA
+            7.0: (6.0,),                # R-MCA -> R-ICA
+            8.0: (2.0, 4.0),            # L-Pcom -> L-PCA, L-ICA
+            9.0: (3.0, 6.0),            # R-Pcom -> R-PCA, R-ICA
+            10.0: (11.0, 12.0),         # Acom -> L-ACA, R-ACA
+            11.0: (4.0,),               # L-ACA -> L-ICA
+            12.0: (6.0,),               # R-ACA -> R-ICA
+            13.0: (10.0, 11.0, 12.0)
+        }
+
+        unique_labels = np.unique(self.point_data['Artery'])
+
+        if 0 in unique_labels:
+            unique_labels = np.delete(unique_labels, 0)
+        
+        # Extract vessel bifurfaction boundary cells from surface.
+        # Find barycenters of boundaries
+
+        arteries = self.point_data['Artery']
+        end_points = []
+
+        
+        for label1 in unique_labels:
+            for label2 in standardAdj[label1]:
+                idx_a = np.flatnonzero(arteries == label1)
+                idx_b = np.flatnonzero(arteries == label2)
+
+                if len(idx_a) == 0 or len(idx_b) == 0:
+                    continue
+
+                pts_a = self.points[idx_a]            # (n₁, 3) coordinates
+                pts_b = self.points[idx_b]            # (n₂, 3) coordinates
+
+                # build a KD-tree on one set (label_b) and query with the other set
+                tree_b = cKDTree(pts_b)
+                dists, nearest = tree_b.query(pts_a)  # nearest neighbour in label_b for each point in label_a
+
+                best = np.argmin(dists)               # index in pts_a of the overall closest pair
+                end_points.append(int(idx_a[best]))
+                end_points.append(int(idx_b[nearest[best]]))
+
+        skeleton_points = self.points
+        skeleton_labels = np.zeros(skeleton_points.shape[0])
+        for idx in end_points:
+            skeleton_labels[idx] = 1
+        self.point_data['ConnectionLabel'] = skeleton_labels
     
-    radii_mm = distance_map[skeleton > 0]
-    labels = new_data_array[skeleton > 0]
-    zyx_coords = np.array(np.where(skeleton > 0)).T
+class OrderedSkeleton(Skeleton):
+    def __init__(self):
+        return
 
-    homogeneous_coords = np.c_[zyx_coords[:, ::-1], np.ones(len(zyx_coords))]  # (x, y, z, 1)
-    world_coords = (new_affine @ homogeneous_coords.T).T[:, :3]
-
-    pv_skeleton = pv.PolyData(world_coords)
-    pv_skeleton.point_data["Radius"] = radii_mm.flatten()
-    pv_skeleton.point_data["Artery"] = labels.flatten()
-
-    return pv_skeleton
-
-def filter_out_artery_points(mesh: pv.PolyData,
-                             artery_to_remove: float,
-                             atol: float = 1e-6) -> pv.PolyData:
-    """
-    Return a copy of *mesh* with every point whose ``Artery`` value equals
-    *artery_to_remove* (within *atol*) removed.
-
-    Parameters
-    ----------
-    mesh : pyvista.PolyData
-        The input mesh.  Must contain a point-data array named ``"Artery"``.
-    artery_to_remove : float
-        The artery label to filter out (e.g., ``10.0``).
-    atol : float, optional
-        Absolute tolerance when comparing floating-point values.
-        Defaults to ``1 × 10⁻⁶``.
-
-    Returns
-    -------
-    pyvista.PolyData
-        A new mesh that no longer contains the specified artery’s points
-        (and any cells that depended on them).
-
-    Raises
-    ------
-    KeyError
-        If the mesh lacks an ``"Artery"`` point-data array.
-    ValueError
-        If no points remain after filtering.
-    """
-    # --- sanity checks --------------------------------------------------------
-    if "Artery" not in mesh.point_data:
-        raise KeyError("Point-data array 'Artery' not found in the mesh.")
-
-    arteries = np.asarray(mesh["Artery"])
-    keep_mask = np.abs(arteries - artery_to_remove) > atol       # keep ≠ target
-    keep_ids  = np.where(keep_mask)[0]
-
-    if keep_ids.size == 0:
-        raise ValueError("Filtering removed every point; nothing left to return.")
-
-    # --- extract the surviving points & associated cells ----------------------
-    # `adjacent_cells=False` ensures cells touching discarded points are dropped.
-    out = mesh.extract_points(keep_ids, adjacent_cells=False, include_cells=True)
-
-    # final tidy-up: remove any orphaned points left by cell deletion
-    return out.clean()
-
-def filter_artery_by_radius(mesh: pv.PolyData,
-                            artery_label: float,
-                            radius_min: float,
-                            atol: float = 1e-6) -> pv.PolyData:
-    """
-    Return a copy of *mesh* with points from a given artery removed if their
-    ``Radius`` value is below ``radius_min``.
-
-    Parameters
-    ----------
-    mesh : pyvista.PolyData
-        Input mesh. Must contain point-data arrays ``"Artery"`` and ``"Radius"``.
-    artery_label : float
-        The artery whose thin points you want to eliminate (e.g. ``10.0``).
-    radius_min : float
-        Minimum allowable radius. Points in the chosen artery with a radius
-        **< radius_min** are discarded.
-    atol : float, optional
-        Absolute tolerance when comparing floating-point artery labels.
-
-    Returns
-    -------
-    pyvista.PolyData
-        A new, cleaned mesh.
-
-    Raises
-    ------
-    KeyError
-        If required data arrays are missing.
-    ValueError
-        If all points are removed.
-    """
-    # --- sanity checks --------------------------------------------------------
-    for name in ("Artery", "Radius"):
-        if name not in mesh.point_data:
-            raise KeyError(f"Point-data array '{name}' not found in the mesh.")
-
-    arteries = np.asarray(mesh["Artery"])
-    radii    = np.asarray(mesh["Radius"])
-
-    # Points to KEEP:
-    #   • any artery ≠ target
-    #   • OR radius ≥ radius_min
-    keep_mask = ~(
-        (np.abs(arteries - artery_label) < atol) &      # same artery …
-        (radii < radius_min)                            # … but too small
-    )
-    keep_ids = np.where(keep_mask)[0]
-
-    if keep_ids.size == 0:
-        raise ValueError("Filtering removed every point; nothing left to return.")
-
-    # --- extract surviving points & corresponding cells -----------------------
-    out = mesh.extract_points(keep_ids,
-                              adjacent_cells=False,
-                              include_cells=True)
-
-    # clean() drops any orphaned points left by cell deletion
-    return out.clean()
-
-def extract_start_and_end_voxels(nifti_img: nib.Nifti1Image, pv_image: pv.ImageData, skeleton: pv.PolyData):
-    standardAdj = {
-        1.0: (2.0, 3.0),            # Bas -> L-PCA, R-PCA
-        2.0: (1.0, 8.0),            # L-PCA -> Bas, L-Pcom
-        3.0: (1.0, 9.0),            # R-PCA -> Bas, R-Pcom
-        4.0: (5.0, 8.0, 11.0),      # L-ICA -> L-MCA, L-Pcom, L-ACA
-        5.0: (4.0,),                # L-MCA -> L-ICA
-        6.0: (7.0, 9.0, 12.0),      # R-ICA -> R-MCA, R-Pcom, R-ACA
-        7.0: (6.0,),                # R-MCA -> R-ICA
-        8.0: (2.0, 4.0),            # L-Pcom -> L-PCA, L-ICA
-        9.0: (3.0, 6.0),            # R-Pcom -> R-PCA, R-ICA
-        10.0: (11.0, 12.0),         # Acom -> L-ACA, R-ACA
-        11.0: (4.0,),               # L-ACA -> L-ICA
-        12.0: (6.0,),               # R-ACA -> R-ICA
-        13.0: (10.0, 11.0, 12.0)
-    }
-
-    data_array = nifti_img.get_fdata()
-    unique_labels = np.unique(data_array)
-
-    if 0 in unique_labels:
-        unique_labels = np.delete(unique_labels, 0)
-    
-    # Extract vessel bifurfaction boundary cells from surface.
-    # Find barycenters of boundaries
-    
-    #all_barycenters = {}
-
-    arteries = skeleton['Artery']
-    end_points = []
-
-    for label1 in unique_labels:
-        for label2 in standardAdj[label1]:
-            idx_a = np.flatnonzero(arteries == label1)
-            idx_b = np.flatnonzero(arteries == label2)
-
-            if len(idx_a) == 0 or len(idx_b) == 0:
-                continue
-
-            pts_a = skeleton.points[idx_a]            # (n₁, 3) coordinates
-            pts_b = skeleton.points[idx_b]            # (n₂, 3) coordinates
-
-            # build a KD-tree on one set (label_b) and query with the other set
-            tree_b = cKDTree(pts_b)
-            dists, nearest = tree_b.query(pts_a)  # nearest neighbour in label_b for each point in label_a
-
-            best = np.argmin(dists)               # index in pts_a of the overall closest pair
-            end_points.append(int(idx_a[best]))
-            end_points.append(int(idx_b[nearest[best]]))
-
-    skeleton_points = skeleton.points
-    skeleton_labels = np.zeros(skeleton_points.shape[0])
-    for idx in end_points:
-        skeleton_labels[idx] = 1
-    skeleton.point_data['CenterlineLabels'] = skeleton_labels
+class CenterlineNetwork(OrderedSkeleton):
+    def __init__(self):
+        return
 
 endpoint_tangents: dict[tuple[float, float, float], np.ndarray] = {}
 
@@ -489,7 +564,6 @@ class Artery:
         self.trunks         = []
         self.split_paths()
 
-
     def pathfind(self):
         try:
             self.path_idxs = order_artery_points(self.points, self.point_labels, k=6)
@@ -529,7 +603,6 @@ class Artery:
             self.new_spheres = np.insert(self.new_spheres, len(self.new_spheres), self.point_data.sphere_labels[target_idx])
 
             self.paths[target_label] = Path(self.label, target_label, reordered_local, pts_reordered, rad_reordered)
-
 
     def split_paths(self):
         if len(self.paths) == 1:
@@ -1278,7 +1351,6 @@ class UnionFind:
             self.parent[rv] = ru
             self.rank[ru] += 1
         return True
-
 
 # ---------------------------------------------------------
 # Main function: degree-constrained MST

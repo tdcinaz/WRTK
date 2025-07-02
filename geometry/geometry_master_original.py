@@ -885,7 +885,7 @@ class COW:
         self.branches = {}
         self.combine_arteries()
         self.connections = []
-        #self.get_connections()
+        self.get_connections()
 
     @cached_property
     def all_splines(self):
@@ -1075,8 +1075,8 @@ class COW:
         
         p = pv.Plotter()
 
-        p.add_mesh(self.skeleton, render_points_as_spheres=True, point_size=5, color="lightgray")
-        p.add_mesh(self.network, color="dodgerblue", line_width=4, label="Weighted smoothing spline")
+        p.add_mesh(self.skeleton, render_points_as_spheres=True, point_size=7, color="lightgray")
+        p.add_mesh(self.network, color="dodgerblue", line_width=6, label="Weighted smoothing spline")
         #point_cloud = [connection.point for connection in self.connections]
         #derivative_point_cloud = pv.PolyData(eval_points)
         #p.add_mesh(derivative_point_cloud, color = 'purple', point_size=10, render_points_as_spheres=True)
@@ -1120,9 +1120,6 @@ def find_last_shared_point(path1, path2):
                 flipped = True
             #accounts for weird geometry
             else:
-                print(path1_pts)
-                print(path2_pts)
-                break
                 path1_pts = np.delete(path1_pts, 0, axis=0)
                 path2_pts = np.delete(path2_pts, 0, axis=0)
     except:
@@ -1144,16 +1141,7 @@ def create_cow(
     patient_ID
 ):
     test_cow = COW(skeleton, patient_ID)
-    print(len(test_cow.all_splines))
 
-    num_splines = {}
-    for spline in test_cow.all_splines:
-        if spline.obj.label not in list(num_splines.keys()):
-            num_splines[spline.obj.label] = 1
-        else:
-            num_splines[spline.obj.label] += 1
-    
-    print(num_splines)
     #test_cow.graph_arteries()
     #test_cow.export_angles("angles.csv")
     test_cow.test_graph()

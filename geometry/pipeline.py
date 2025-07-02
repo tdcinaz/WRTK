@@ -5,7 +5,7 @@ from os.path import join
 import logging
 import pyvista as pv
 #import pymeshfix
-from geometry_master import (
+from geometry_master_original import (
     compute_label_volumes,
     nifti_to_pv_image_data,
     compute_skeleton,
@@ -13,7 +13,6 @@ from geometry_master import (
     create_cow,
     filter_out_artery_points,
     filter_artery_by_radius,
-    extract_angles,
 )
 from skimage.morphology import skeletonize
 
