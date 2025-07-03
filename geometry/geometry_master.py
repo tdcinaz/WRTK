@@ -15,6 +15,7 @@ from scipy.ndimage import distance_transform_edt
 from scipy.interpolate import splprep, splev, make_splprep, make_interp_spline
 from scipy.spatial import cKDTree
 from scipy.sparse import csr_matrix
+from scipy.spatial.distance import cdist
 from scipy.sparse.csgraph import minimum_spanning_tree, dijkstra
 import networkx as nx
 from typing import Tuple
@@ -98,7 +99,6 @@ class Skeleton(pv.PolyData):
         self.point_data['Radius'] = self.radii_mm.flatten()
         self.point_data["Artery"] = self.labels.flatten()
         self._extract_start_and_end_voxels()
-        
         
     def _compute_points(self):
         points = []
@@ -344,11 +344,16 @@ class OrderedSkeleton(Skeleton):
     def create_from_parent(cls, skeleton_instance: Skeleton):
         instance = cls.__new__(cls)
 
-        ordered_points = cls._order_points(skeleton_instance)
+        msts = cls.find_msts(skeleton_instance)
 
+        plotter = pv.Plotter()
+
+        for mst in msts:
+            plotter = cls.plot_mst(mst, plotter)
+        plotter.show()
         #do not copy connection points array, radius array, or label array as they will be unordered
 
-        pv.PolyData.__init__(instance, ordered_points)
+        #pv.PolyData.__init__(instance, ordered_points)
 
 
         #instance.__dict__.update(skeleton_instance.__dict__)
@@ -361,12 +366,15 @@ class OrderedSkeleton(Skeleton):
         return
 
     @staticmethod
-    def _order_points(skeleton : Skeleton):
+    def find_msts(skeleton : Skeleton):
         #create temporary polydata object to insert ordered points intp
         temp_polydata = pv.PolyData()
 
         #figure out what arteries are present in specific patient
         present_arteries = np.unique(skeleton.point_data['Artery']).flatten()
+
+        all_trees = []
+        end_points = []
 
         for present_artery in present_arteries:
             
@@ -381,16 +389,69 @@ class OrderedSkeleton(Skeleton):
             #find the actual points
             artery_points = skeleton.points[artery_indexes]
 
+            radii_at_pts = skeleton.point_data['Radius'][artery_indexes]
+
+            #furthest_point = order_artery_points(artery_points, connection_pts)[0][-1]
+            #end_points.append(artery_points[furthest_point])
+
             #make networkX graph object
             graph = nx.Graph()
 
+            #create a matrix of distances between every single node
+            distance_matrix_temp = cdist(artery_points, artery_points)
+            distance_matrix = (distance_matrix_temp - np.min(distance_matrix_temp)) / (np.max(distance_matrix_temp) - np.min(distance_matrix_temp))
+
+            inverse_radii_temp = [1/(np.power(radius, 2)) for radius in radii_at_pts]
+            inverse_radii = (inverse_radii_temp - np.min(inverse_radii_temp)) / (np.max(inverse_radii_temp) - np.min(inverse_radii_temp))
+
             #fill nodes of the graph
             for i, (x, y, z) in enumerate(artery_points):
-                graph.add_node(i, pos=(x,y,z), x=x, y=y, z=z)
+                graph.add_node(i, pos=(x,y,z), x=x, y=y, z=z, radius=radii_at_pts[i])
+
+            #fill edges
+
+            k=3
+            last_slope = [0, 0, 0]
+            for i in range(len(artery_points)):
+                current_point = artery_points[i]
+                nearest = np.argsort(distance_matrix[i])[1:k+1]
+                next_inverse_radius = [inverse_radii[i] for i in nearest]
+                current_inverse_radius = inverse_radii[i]
+                for idx, j in enumerate(nearest):
+                    distance = distance_matrix[i][j]
+                    inverse_radius_diff = abs(current_inverse_radius - next_inverse_radius[idx])
+                    next_point = artery_points[idx]
+                    slope = np.array(current_point - next_point)
+                    magnitude = np.linalg.norm(slope)                    
+                    if magnitude == 0:
+                        slope_weight = 0
+                        unit_vector_slope = last_slope
+                    else: 
+                        unit_vector_slope = slope / magnitude
+                    slope_weight = np.linalg.norm(np.cross(unit_vector_slope, last_slope))
+                    composite_weight = distance + inverse_radius_diff
+                    graph.add_edge(i, j, weight=composite_weight)
+                last_slope = unit_vector_slope
 
             minimum_spanning_tree = nx.minimum_spanning_tree(graph, algorithm="kruskal")
+            all_trees.append(minimum_spanning_tree)
 
-        return
+        return all_trees
+    
+    @staticmethod
+    def plot_mst(mst: nx.Graph, plotter: pv.Plotter):
+
+        mst_points = np.array([mst.nodes[node]['pos'] for node in mst.nodes()])
+        mst_cloud = pv.PolyData(mst_points)
+        plotter.add_mesh(mst_cloud, color='red')
+
+        for u, v in mst.edges():
+            pos_u = np.array(mst.nodes[u]['pos'])
+            pos_v = np.array(mst.nodes[v]['pos'])
+            line = pv.Line(pos_u, pos_v)
+            plotter.add_mesh(line, color='green', line_width=4)
+
+        return plotter
 
 class CenterlineNetwork(OrderedSkeleton):
     def __init__(self):

@@ -8,9 +8,9 @@ input = "training/labelsTr/topcow_301.nii.gz"
 pv_image = Image(input)
 
 skeleton = pv_image.create_skeleton()
+#skeleton = skeleton.filter_out_artery_points([4, 6])
+#skeleton.plot()
 
 #print(skeleton.points)
 
 ordered_skeleton = OrderedSkeleton.create_from_parent(skeleton)
-
-print(ordered_skeleton.points)
