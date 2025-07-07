@@ -346,6 +346,8 @@ class OrderedSkeleton(Skeleton):
 
         msts = cls.find_msts(skeleton_instance)
 
+        cls.clean_mst(msts[0])
+
         plotter = pv.Plotter()
 
         for mst in msts:
@@ -374,7 +376,7 @@ class OrderedSkeleton(Skeleton):
         present_arteries = np.unique(skeleton.point_data['Artery']).flatten()
 
         all_trees = []
-        end_points = []
+        #end_points = []
 
         for present_artery in present_arteries:
             
@@ -397,7 +399,7 @@ class OrderedSkeleton(Skeleton):
             #make networkX graph object
             graph = nx.Graph()
 
-            #create a matrix of distances between every single node
+            #create a 2x2 matrix of distances between every single node
             distance_matrix_temp = cdist(artery_points, artery_points)
             distance_matrix = (distance_matrix_temp - np.min(distance_matrix_temp)) / (np.max(distance_matrix_temp) - np.min(distance_matrix_temp))
 
@@ -409,14 +411,19 @@ class OrderedSkeleton(Skeleton):
                 graph.add_node(i, pos=(x,y,z), x=x, y=y, z=z, radius=radii_at_pts[i])
 
             #fill edges
-
+            #pick only 3 closest neighbors
             k=3
             last_slope = [0, 0, 0]
             for i in range(len(artery_points)):
                 current_point = artery_points[i]
+
+                #take the 3 nearest points and relevant data
                 nearest = np.argsort(distance_matrix[i])[1:k+1]
+                
                 next_inverse_radius = [inverse_radii[i] for i in nearest]
                 current_inverse_radius = inverse_radii[i]
+                #create weights for edges of 3 nearest points
+                #weight based on inverse radius squared and distance maybe slope
                 for idx, j in enumerate(nearest):
                     distance = distance_matrix[i][j]
                     inverse_radius_diff = abs(current_inverse_radius - next_inverse_radius[idx])
@@ -433,6 +440,7 @@ class OrderedSkeleton(Skeleton):
                     graph.add_edge(i, j, weight=composite_weight)
                 last_slope = unit_vector_slope
 
+            #create mst
             minimum_spanning_tree = nx.minimum_spanning_tree(graph, algorithm="kruskal")
             all_trees.append(minimum_spanning_tree)
 
@@ -452,6 +460,31 @@ class OrderedSkeleton(Skeleton):
             plotter.add_mesh(line, color='green', line_width=4)
 
         return plotter
+
+    @staticmethod
+    def clean_mst(mst: nx.Graph):
+        
+        degrees = np.empty((0, 1))
+        #find degree of every node in the network
+        for point in range(len(mst.nodes)):
+            degrees = np.append(degrees, mst.degree(point))
+        
+        #find what nodes have more than 2 connections
+        split_keep_mask = np.ones(len(degrees), dtype=bool)
+        split_keep_mask &= (degrees > 2)
+        split_idxs = np.where(split_keep_mask)[0]
+        
+        #append all the nodes where branches start to the list
+        split_nodes = [mst.nodes[i] for i in split_idxs]
+        
+        #find what nodes are leaf nodes (terminating nodes)
+        leaf_keep_mask = np.ones(len(degrees), dtype=bool)
+        leaf_keep_mask &= (degrees == 1)
+        leaf_idxs = np.where(leaf_keep_mask)[0]
+
+        #append all the nodes where branches end to the list
+        leaf_nodes = [mst.nodes[i] for i in leaf_idxs]
+
 
 class CenterlineNetwork(OrderedSkeleton):
     def __init__(self):

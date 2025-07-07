@@ -49,7 +49,7 @@ def main():
         for file in all_files:
             args.patient_ID = file.split(".")[0][-3:]
             try:
-                pipeline(args, prefix="topcow")
+                pipeline(args, prefix="stroke")
             except:
                 continue
     else:

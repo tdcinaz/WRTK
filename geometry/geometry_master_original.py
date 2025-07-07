@@ -1142,8 +1142,8 @@ def create_cow(
 ):
     test_cow = COW(skeleton, patient_ID)
 
-    test_cow.graph_arteries()
-    #test_cow.export_angles("angles.csv")
+    #test_cow.graph_arteries()
+    test_cow.export_angles("angles_stroke.csv")
     #test_cow.test_graph()
     return test_cow
 
