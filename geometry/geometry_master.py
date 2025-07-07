@@ -23,6 +23,7 @@ from functools import cached_property
 from itertools import combinations
 import csv
 import networkx as nx
+import copy
 
 class Image:
     def __init__(self, file_path):
@@ -140,8 +141,11 @@ class Skeleton(pv.PolyData):
 
         skeleton_connection_labels = np.nonzero(self.point_data['ConnectionLabel'])
 
-        connection_points = self.points[skeleton_connection_labels]
-        p.add_mesh(connection_points, color='purple')
+        try:
+            connection_points = self.points[skeleton_connection_labels]
+            p.add_mesh(connection_points, color='purple')
+        except:
+            None
         p.show()
 
         return
@@ -345,14 +349,18 @@ class OrderedSkeleton(Skeleton):
         instance = cls.__new__(cls)
 
         msts = cls.find_msts(skeleton_instance)
+        
+        #plotter = pv.Plotter()
+        #plotter = cls.plot_mst(msts[0], plotter)
+        #plotter.show()
 
-        cls.clean_mst(msts[0])
+        cleaned = [cls.clean_short_branches(mst) for mst in msts]
 
-        plotter = pv.Plotter()
-
-        for mst in msts:
-            plotter = cls.plot_mst(mst, plotter)
-        plotter.show()
+        plotter2 = pv.Plotter()
+        for mst in cleaned:
+            plotter2 = cls.plot_mst(mst, plotter2)
+        plotter2.show()
+        
         #do not copy connection points array, radius array, or label array as they will be unordered
 
         #pv.PolyData.__init__(instance, ordered_points)
@@ -367,6 +375,7 @@ class OrderedSkeleton(Skeleton):
         #super().__init__(i)
         return
 
+    #once working, package find_msts, clean_short_branches and clean_sharp_angles into one nice function
     @staticmethod
     def find_msts(skeleton : Skeleton):
         #create temporary polydata object to insert ordered points intp
@@ -462,28 +471,73 @@ class OrderedSkeleton(Skeleton):
         return plotter
 
     @staticmethod
-    def clean_mst(mst: nx.Graph):
+    def clean_short_branches(mst: nx.Graph):
         
+        mst_copy = copy.deepcopy(mst)
         degrees = np.empty((0, 1))
         #find degree of every node in the network
         for point in range(len(mst.nodes)):
             degrees = np.append(degrees, mst.degree(point))
         
-        #find what nodes have more than 2 connections
+        #find what nodes have more than 2 connections (branching nodes)
         split_keep_mask = np.ones(len(degrees), dtype=bool)
         split_keep_mask &= (degrees > 2)
-        split_idxs = np.where(split_keep_mask)[0]
-        
-        #append all the nodes where branches start to the list
-        split_nodes = [mst.nodes[i] for i in split_idxs]
+        split_nodes = np.where(split_keep_mask)[0]
         
         #find what nodes are leaf nodes (terminating nodes)
         leaf_keep_mask = np.ones(len(degrees), dtype=bool)
         leaf_keep_mask &= (degrees == 1)
-        leaf_idxs = np.where(leaf_keep_mask)[0]
+        leaf_nodes = np.where(leaf_keep_mask)[0]
 
-        #append all the nodes where branches end to the list
-        leaf_nodes = [mst.nodes[i] for i in leaf_idxs]
+        for split_node in split_nodes:
+            neighbors = np.array([n for n in mst.neighbors(split_node)])
+            for leaf_node in leaf_nodes:
+                #check if a leaf node is neighbors with a split node
+                #if they're neighbors, the branch has length 1, so try and reinsert the point in the right spot
+                if leaf_node in neighbors:
+                    #create vector between branch and leaf nodes
+                    leaf_node_vector = np.array(mst.nodes[leaf_node]['pos']) - np.array(mst.nodes[split_node]['pos'])
+                    leaf_node_pos = np.array(mst.nodes[leaf_node]['pos'])
+
+
+                    #find all vectors between the split node and neighboring points except for the leaf node vector
+                    neighbor_without_leaf = np.delete(neighbors, np.where(neighbors == leaf_node))
+                    #print(neighbor_without_leaf)
+                    neighboring_vectors = np.array([np.array(mst.nodes[neighbor]['pos']) - np.array(mst.nodes[split_node]['pos']) for neighbor in neighbor_without_leaf])
+
+                    #compute dot products between all neighbor vectors and leaf node vector
+                    dot_products = np.empty((0))
+                    for neighbor_vec in neighboring_vectors:
+                        dot_products = np.append(dot_products, np.dot(neighbor_vec, leaf_node_vector))
+                    
+                    #choose the neighboring vector that most closely aligns with the leaf node vector (higher positive dot product --> lower angle)
+                    target_vec = neighboring_vectors[np.argmax(dot_products)]
+                    target_point = neighbor_without_leaf[np.argmax(dot_products)]
+
+                    
+                    projected_vec = (np.dot(target_vec, leaf_node_vector) / (np.power(np.linalg.norm(target_vec), 2))) * target_vec
+                    if np.linalg.norm(projected_vec) < np.linalg.norm(target_vec):
+                        mst_copy.remove_edge(target_point, split_node)
+                        mst_copy.add_edge(split_node, leaf_node, weight=0.5)
+                        mst_copy.add_edge(leaf_node, target_point, weight=0.5)
+                        insertion_point_found = True
+                    else:
+                        mst_copy.remove_node(leaf_node)
+                        insertion_point_found = True
+                    break
+        return mst_copy            
+
+    @staticmethod
+    def clean_sharp_angles(mst: nx.Graph):
+        
+        '''three cases:
+        1. two sharp angles adjacent to one another
+        2. bad branch point
+        3. sharp angle at the end of a vessel'''
+
+
+        return
+
 
 
 class CenterlineNetwork(OrderedSkeleton):

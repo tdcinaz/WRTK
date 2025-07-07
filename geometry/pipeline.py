@@ -21,6 +21,7 @@ logging.basicConfig(level=logging.INFO)
 def pipeline(
     args: argparse.Namespace,
     prefix: str,
+    filename: str,
 ):
     """
     Main workflow:
@@ -35,9 +36,12 @@ def pipeline(
 
     patient_ID = args.patient_ID
 
-    patient_input_path = join(args.input_folder, f"{prefix}_{patient_ID}.nii.gz")
+    #patient_input_path = join(args.input_folder, f"{prefix}_{patient_ID}.nii.gz")
+    patient_input_path = join(args.input_folder, filename)
 
-    patient_output_path = join(args.output, f"{prefix}_{patient_ID}")
+    #patient_output_path = join(args.output, f"{prefix}_{patient_ID}")
+    patient_output_path = join(args.output, f"seg_{filename}")
+
     os.makedirs(patient_output_path, exist_ok=True)
 
     # 1) Load the NIfTI with nibabel
