@@ -378,7 +378,7 @@ class OrderedSkeleton(Skeleton):
     #once working, package find_msts, clean_short_branches and clean_sharp_angles into one nice function
     @staticmethod
     def find_msts(skeleton : Skeleton):
-        #create temporary polydata object to insert ordered points intp
+        #create temporary polydata object to insert ordered points into
         temp_polydata = pv.PolyData()
 
         #figure out what arteries are present in specific patient
@@ -416,8 +416,10 @@ class OrderedSkeleton(Skeleton):
             inverse_radii = (inverse_radii_temp - np.min(inverse_radii_temp)) / (np.max(inverse_radii_temp) - np.min(inverse_radii_temp))
 
             #fill nodes of the graph
+
+            '''ADD BOOLEAN ATTRIBUTES FOR CONNECTION POINT OR FURTHEST GEODESIC POINT'''
             for i, (x, y, z) in enumerate(artery_points):
-                graph.add_node(i, pos=(x,y,z), x=x, y=y, z=z, radius=radii_at_pts[i])
+                graph.add_node(i, pos=(x,y,z), x=x, y=y, z=z, radius=radii_at_pts[i], artery=present_artery)
 
             #fill edges
             #pick only 3 closest neighbors
@@ -470,7 +472,17 @@ class OrderedSkeleton(Skeleton):
 
         return plotter
 
+    #happens before cleaning short branches
     @staticmethod
+    #connection points or furthest geodesic points must have a degree of one 
+    #if they don't reconnect the graph in a way so that they do
+    def fix_bad_end_points(mst: nx.Graph):
+        return
+
+    #happens before finding best centerline
+    @staticmethod
+    #the mst will often create branches that is only one node long
+    #these nodes are reinserted between the two points it should be between or culled
     def clean_short_branches(mst: nx.Graph):
         
         mst_copy = copy.deepcopy(mst)
@@ -479,12 +491,14 @@ class OrderedSkeleton(Skeleton):
         for point in range(len(mst.nodes)):
             degrees = np.append(degrees, mst.degree(point))
         
+
         #find what nodes have more than 2 connections (branching nodes)
         split_keep_mask = np.ones(len(degrees), dtype=bool)
         split_keep_mask &= (degrees > 2)
         split_nodes = np.where(split_keep_mask)[0]
         
-        #find what nodes are leaf nodes (terminating nodes)
+        #find what nodes are leaf nodes (terminating nodes)\
+        '''CONNECTION POINTS OR FURTHEST GEODESIC POINTS ARE NOT ALLOWED TO BE LEAF NODES'''
         leaf_keep_mask = np.ones(len(degrees), dtype=bool)
         leaf_keep_mask &= (degrees == 1)
         leaf_nodes = np.where(leaf_keep_mask)[0]
@@ -516,17 +530,29 @@ class OrderedSkeleton(Skeleton):
 
                     
                     projected_vec = (np.dot(target_vec, leaf_node_vector) / (np.power(np.linalg.norm(target_vec), 2))) * target_vec
-                    if np.linalg.norm(projected_vec) < np.linalg.norm(target_vec):
-                        mst_copy.remove_edge(target_point, split_node)
-                        mst_copy.add_edge(split_node, leaf_node, weight=0.5)
-                        mst_copy.add_edge(leaf_node, target_point, weight=0.5)
-                        insertion_point_found = True
-                    else:
-                        mst_copy.remove_node(leaf_node)
-                        insertion_point_found = True
-                    break
-        return mst_copy            
+                    try:
+                        if np.linalg.norm(projected_vec) < np.linalg.norm(target_vec):
+                            mst_copy.remove_edge(target_point, split_node)
+                            mst_copy.add_edge(split_node, leaf_node, weight=0.5)
+                            mst_copy.add_edge(leaf_node, target_point, weight=0.5)
+                        else:
+                            mst_copy.remove_node(leaf_node)
+                            #get point in front of the next point
+                            #try to insert it between those two
+                            #if vector is still too long then get rid of the point
+                    except:
+                        point_failure_indexes = [leaf_node, target_point, split_node]
+                        plotter = pv.Plotter()
+                        plotter = OrderedSkeleton.plot_mst(mst, plotter)
 
+                        leaf_points = np.array([np.array(mst.nodes[index]['pos']) for index in leaf_nodes])
+                        split_points = np.array([np.array(mst.nodes[index]['pos']) for index in split_nodes])
+                        plotter.add_mesh(leaf_points, color='green', point_size=6)
+                        plotter.add_mesh(split_points, color='black', point_size=6)
+                        plotter.show()
+        return mst_copy            
+    
+    #happens after finding best centerline
     @staticmethod
     def clean_sharp_angles(mst: nx.Graph):
         
@@ -534,7 +560,6 @@ class OrderedSkeleton(Skeleton):
         1. two sharp angles adjacent to one another
         2. bad branch point
         3. sharp angle at the end of a vessel'''
-
 
         return
 
