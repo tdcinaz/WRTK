@@ -6,6 +6,7 @@ import vtk
 from vtkmodules.util import numpy_support as ns
 import os
 import sys
+import csv
 
 def compute_average_diameters_and_export_vtp(nifti_path, output_vtp="centerlines.vtp", label_range=range(1, 14)):
     # Load NIfTI image
@@ -23,6 +24,10 @@ def compute_average_diameters_and_export_vtp(nifti_path, output_vtp="centerlines
     all_points_mm = []
     all_radii_mm = []
     all_labels = []
+
+    with open("diameters_stroke.csv", 'a', newline='\n') as file:
+        writer = csv.writer(file)
+        writer.writerow([nifti_path])
 
     for label in label_range:
         print(f"\nProcessing label {label}...")
@@ -52,7 +57,11 @@ def compute_average_diameters_and_export_vtp(nifti_path, output_vtp="centerlines
             continue
 
         avg_diameters[label] = np.mean(diameters_mm)
-        print(f"  Average diameter: {avg_diameters[label]:.3f} mm ({len(diameters_mm)} voxels)")
+        print(f"  Average diameter {label}: {avg_diameters[label]:.3f} mm ({len(diameters_mm)} voxels)")
+
+        with open("diameters_stroke.csv", 'a', newline='\n') as file:
+            writer = csv.writer(file)
+            writer.writerow([f"  Average diameter label {label}: {avg_diameters[label]:.3f} mm ({len(diameters_mm)} voxels)"])
 
         # Get voxel indices of centerline
         zyx_coords = np.array(np.where(skeleton > 0)).T  # shape (N, 3)

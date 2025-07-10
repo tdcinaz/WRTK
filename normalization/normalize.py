@@ -324,11 +324,11 @@ def full_pipeline(
     mr_orig_cube_file      = join(original_path, f"{prefix}_mr_cube_orig_{patient_ID}.nii.gz")
     mr_orig_cube_seg_file  = join(original_path, f"{prefix}_mr_cube_orig_seg_{patient_ID}.nii.gz")
 
-    # --- CT ----------------------------------------------------------------
-    logging.info("   9.1 ++++ : CT original‑resolution ROI cube")
+    # --- CT -------------    logging.info("   9.1 ++++ : CT original‑resolution ROI cube")
     crop_reanchor_original(ct_autobox_file, ct_seg_autobox_file,
                             ct_bbox, ct_aff_nn,
                             ct_orig_cube_file, ct_orig_cube_seg_file)
+
 
     # --- MR ----------------------------------------------------------------
     logging.info("   9.2 ++++ : MR original‑resolution ROI cube")

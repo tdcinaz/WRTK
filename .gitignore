@@ -6,3 +6,4 @@ normalization/__pycache__/
 training/imagesTr/
 training/labelsTr/
 geometry/__pycache__/
+geometry/__pycache__/geometry_master.cpython-311.pyc

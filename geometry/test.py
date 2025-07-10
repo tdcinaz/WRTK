@@ -9,11 +9,8 @@ pv_image = Image(input)
 
 
 skeleton = pv_image.create_skeleton()
-#skeleton = skeleton.filter_out_artery_points([1, 2, 3, 4, 6, 7, 8, 9, 11, 12])
-
+skeleton = skeleton.filter_out_artery_points([4, 6])
 
 #skeleton.plot()
-
-#print(skeleton.points)
 
 ordered_skeleton = OrderedSkeleton.create_from_parent(skeleton)

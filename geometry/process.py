@@ -53,7 +53,7 @@ def main():
             except:
                 continue
     else:
-        pipeline(args, prefix="topcow")
+        pipeline(args, "topcow", "/home/bdl/WRTK/training/labelsTr/topcow_307.nii.gz")
     
 
 if __name__ == "__main__":
