@@ -45,11 +45,11 @@ def main():
     args = parse_arguments()
     
     if args.batch_mode:
-        all_files = sorted(os.listdir("training/labelsTr"))
+        all_files = sorted(os.listdir("/media/bdl/BECKER-SCAN/segmented/strokepp"))
         for file in all_files:
             args.patient_ID = file.split(".")[0][-3:]
             try:
-                pipeline(args, prefix="topcow")
+                pipeline(args, "aneurysm", file)
             except:
                 continue
     else:

@@ -15,12 +15,15 @@ from scipy.ndimage import distance_transform_edt
 from scipy.interpolate import splprep, splev, make_splprep, make_interp_spline
 from scipy.spatial import cKDTree
 from scipy.sparse import csr_matrix
+from scipy.spatial.distance import cdist
 from scipy.sparse.csgraph import minimum_spanning_tree, dijkstra
 import networkx as nx
 from typing import Tuple
 from functools import cached_property
 from itertools import combinations
 import csv
+import networkx as nx
+import copy
 
 class Image:
     def __init__(self, file_path):
@@ -138,8 +141,11 @@ class Skeleton(pv.PolyData):
 
         skeleton_connection_labels = np.nonzero(self.point_data['ConnectionLabel'])
 
-        connection_points = self.points[skeleton_connection_labels]
-        p.add_mesh(connection_points, color='purple')
+        try:
+            connection_points = self.points[skeleton_connection_labels]
+            p.add_mesh(connection_points, color='purple')
+        except:
+            None
         p.show()
 
         return
@@ -198,7 +204,6 @@ class Skeleton(pv.PolyData):
         filtered_points = self.points[keep_ids]
         filtered_radius = self.point_data['Radius'][keep_ids]
         filtered_artery = self.point_data['Artery'][keep_ids]
-        filtered_connection_labels = self.point_data['ConnectionLabel'][keep_ids]
         
         # Create a completely new Skeleton object
         # We bypass the normal __init__ to avoid recomputing from image
@@ -211,7 +216,8 @@ class Skeleton(pv.PolyData):
         new_skeleton.image = self.image
         new_skeleton.point_data['Radius'] = filtered_radius
         new_skeleton.point_data['Artery'] = filtered_artery
-        new_skeleton.point_data['ConnectionLabel'] = filtered_connection_labels
+        #might be kind of expensive to just remove two points
+        new_skeleton._extract_start_and_end_voxels()
         
         return new_skeleton
 
@@ -267,7 +273,6 @@ class Skeleton(pv.PolyData):
         filtered_points = self.points[keep_ids]
         filtered_radius = self.point_data['Radius'][keep_ids]
         filtered_artery = self.point_data['Artery'][keep_ids]
-        filtered_connection_labels = self.point_data['ConnectionLabel'][keep_ids]
         
         # Create a completely new Skeleton object
         # We bypass the normal __init__ to avoid recomputing from image
@@ -280,7 +285,7 @@ class Skeleton(pv.PolyData):
         new_skeleton.image = self.image
         new_skeleton.point_data['Radius'] = filtered_radius
         new_skeleton.point_data['Artery'] = filtered_artery
-        new_skeleton.point_data['ConnectionLabel'] = filtered_connection_labels
+        new_skeleton._extract_start_and_end_voxels()
         
         return new_skeleton
 
@@ -339,8 +344,226 @@ class Skeleton(pv.PolyData):
         self.point_data['ConnectionLabel'] = skeleton_labels
     
 class OrderedSkeleton(Skeleton):
-    def __init__(self):
+    @classmethod
+    def create_from_parent(cls, skeleton_instance: Skeleton):
+        instance = cls.__new__(cls)
+
+        msts = cls.find_msts(skeleton_instance)
+        
+        #plotter = pv.Plotter()
+        #plotter = cls.plot_mst(msts[0], plotter)
+        #plotter.show()
+
+        cleaned = [cls.clean_short_branches(mst) for mst in msts]
+
+        plotter2 = pv.Plotter()
+        for mst in cleaned:
+            plotter2 = cls.plot_mst(mst, plotter2)
+        plotter2.show()
+        
+        #do not copy connection points array, radius array, or label array as they will be unordered
+
+        #pv.PolyData.__init__(instance, ordered_points)
+
+
+        #instance.__dict__.update(skeleton_instance.__dict__)
+
+        return instance
+
+
+    def __init__(self, image: Image):
+        #super().__init__(i)
         return
+
+    #once working, package find_msts, clean_short_branches and clean_sharp_angles into one nice function
+    @staticmethod
+    def find_msts(skeleton : Skeleton):
+        #create temporary polydata object to insert ordered points into
+        temp_polydata = pv.PolyData()
+
+        #figure out what arteries are present in specific patient
+        present_arteries = np.unique(skeleton.point_data['Artery']).flatten()
+
+        all_trees = []
+        #end_points = []
+
+        for present_artery in present_arteries:
+            
+            keep_mask = np.ones(len(skeleton.points), dtype=bool)
+
+            #performs boolean operation to check where the point label matches the target artery label
+            keep_mask &= (skeleton.point_data['Artery'] == present_artery)
+
+            #find where all the labels match
+            artery_indexes = np.where(keep_mask)[0]
+
+            #find the actual points
+            artery_points = skeleton.points[artery_indexes]
+
+            radii_at_pts = skeleton.point_data['Radius'][artery_indexes]
+
+            #furthest_point = order_artery_points(artery_points, connection_pts)[0][-1]
+            #end_points.append(artery_points[furthest_point])
+
+            #make networkX graph object
+            graph = nx.Graph()
+
+            #create a 2x2 matrix of distances between every single node
+            distance_matrix_temp = cdist(artery_points, artery_points)
+            distance_matrix = (distance_matrix_temp - np.min(distance_matrix_temp)) / (np.max(distance_matrix_temp) - np.min(distance_matrix_temp))
+
+            inverse_radii_temp = [1/(np.power(radius, 2)) for radius in radii_at_pts]
+            inverse_radii = (inverse_radii_temp - np.min(inverse_radii_temp)) / (np.max(inverse_radii_temp) - np.min(inverse_radii_temp))
+
+            #fill nodes of the graph
+
+            '''ADD BOOLEAN ATTRIBUTES FOR CONNECTION POINT OR FURTHEST GEODESIC POINT'''
+            for i, (x, y, z) in enumerate(artery_points):
+                graph.add_node(i, pos=(x,y,z), x=x, y=y, z=z, radius=radii_at_pts[i], artery=present_artery)
+
+            #fill edges
+            #pick only 3 closest neighbors
+            k=3
+            last_slope = [0, 0, 0]
+            for i in range(len(artery_points)):
+                current_point = artery_points[i]
+
+                #take the 3 nearest points and relevant data
+                nearest = np.argsort(distance_matrix[i])[1:k+1]
+                
+                next_inverse_radius = [inverse_radii[i] for i in nearest]
+                current_inverse_radius = inverse_radii[i]
+                #create weights for edges of 3 nearest points
+                #weight based on inverse radius squared and distance maybe slope
+                for idx, j in enumerate(nearest):
+                    distance = distance_matrix[i][j]
+                    inverse_radius_diff = abs(current_inverse_radius - next_inverse_radius[idx])
+                    next_point = artery_points[idx]
+                    slope = np.array(current_point - next_point)
+                    magnitude = np.linalg.norm(slope)                    
+                    if magnitude == 0:
+                        slope_weight = 0
+                        unit_vector_slope = last_slope
+                    else: 
+                        unit_vector_slope = slope / magnitude
+                    slope_weight = np.linalg.norm(np.cross(unit_vector_slope, last_slope))
+                    composite_weight = distance + inverse_radius_diff
+                    graph.add_edge(i, j, weight=composite_weight)
+                last_slope = unit_vector_slope
+
+            #create mst
+            minimum_spanning_tree = nx.minimum_spanning_tree(graph, algorithm="kruskal")
+            all_trees.append(minimum_spanning_tree)
+
+        return all_trees
+    
+    @staticmethod
+    def plot_mst(mst: nx.Graph, plotter: pv.Plotter):
+
+        mst_points = np.array([mst.nodes[node]['pos'] for node in mst.nodes()])
+        mst_cloud = pv.PolyData(mst_points)
+        plotter.add_mesh(mst_cloud, color='red')
+
+        for u, v in mst.edges():
+            pos_u = np.array(mst.nodes[u]['pos'])
+            pos_v = np.array(mst.nodes[v]['pos'])
+            line = pv.Line(pos_u, pos_v)
+            plotter.add_mesh(line, color='green', line_width=4)
+
+        return plotter
+
+    #happens before cleaning short branches
+    @staticmethod
+    #connection points or furthest geodesic points must have a degree of one 
+    #if they don't reconnect the graph in a way so that they do
+    def fix_bad_end_points(mst: nx.Graph):
+        return
+
+    #happens before finding best centerline
+    @staticmethod
+    #the mst will often create branches that is only one node long
+    #these nodes are reinserted between the two points it should be between or culled
+    def clean_short_branches(mst: nx.Graph):
+        
+        mst_copy = copy.deepcopy(mst)
+        degrees = np.empty((0, 1))
+        #find degree of every node in the network
+        for point in range(len(mst.nodes)):
+            degrees = np.append(degrees, mst.degree(point))
+        
+
+        #find what nodes have more than 2 connections (branching nodes)
+        split_keep_mask = np.ones(len(degrees), dtype=bool)
+        split_keep_mask &= (degrees > 2)
+        split_nodes = np.where(split_keep_mask)[0]
+        
+        #find what nodes are leaf nodes (terminating nodes)\
+        '''CONNECTION POINTS OR FURTHEST GEODESIC POINTS ARE NOT ALLOWED TO BE LEAF NODES'''
+        leaf_keep_mask = np.ones(len(degrees), dtype=bool)
+        leaf_keep_mask &= (degrees == 1)
+        leaf_nodes = np.where(leaf_keep_mask)[0]
+
+        for split_node in split_nodes:
+            neighbors = np.array([n for n in mst.neighbors(split_node)])
+            for leaf_node in leaf_nodes:
+                #check if a leaf node is neighbors with a split node
+                #if they're neighbors, the branch has length 1, so try and reinsert the point in the right spot
+                if leaf_node in neighbors:
+                    #create vector between branch and leaf nodes
+                    leaf_node_vector = np.array(mst.nodes[leaf_node]['pos']) - np.array(mst.nodes[split_node]['pos'])
+                    leaf_node_pos = np.array(mst.nodes[leaf_node]['pos'])
+
+
+                    #find all vectors between the split node and neighboring points except for the leaf node vector
+                    neighbor_without_leaf = np.delete(neighbors, np.where(neighbors == leaf_node))
+                    #print(neighbor_without_leaf)
+                    neighboring_vectors = np.array([np.array(mst.nodes[neighbor]['pos']) - np.array(mst.nodes[split_node]['pos']) for neighbor in neighbor_without_leaf])
+
+                    #compute dot products between all neighbor vectors and leaf node vector
+                    dot_products = np.empty((0))
+                    for neighbor_vec in neighboring_vectors:
+                        dot_products = np.append(dot_products, np.dot(neighbor_vec, leaf_node_vector))
+                    
+                    #choose the neighboring vector that most closely aligns with the leaf node vector (higher positive dot product --> lower angle)
+                    target_vec = neighboring_vectors[np.argmax(dot_products)]
+                    target_point = neighbor_without_leaf[np.argmax(dot_products)]
+
+                    
+                    projected_vec = (np.dot(target_vec, leaf_node_vector) / (np.power(np.linalg.norm(target_vec), 2))) * target_vec
+                    try:
+                        if np.linalg.norm(projected_vec) < np.linalg.norm(target_vec):
+                            mst_copy.remove_edge(target_point, split_node)
+                            mst_copy.add_edge(split_node, leaf_node, weight=0.5)
+                            mst_copy.add_edge(leaf_node, target_point, weight=0.5)
+                        else:
+                            mst_copy.remove_node(leaf_node)
+                            #get point in front of the next point
+                            #try to insert it between those two
+                            #if vector is still too long then get rid of the point
+                    except:
+                        point_failure_indexes = [leaf_node, target_point, split_node]
+                        plotter = pv.Plotter()
+                        plotter = OrderedSkeleton.plot_mst(mst, plotter)
+
+                        leaf_points = np.array([np.array(mst.nodes[index]['pos']) for index in leaf_nodes])
+                        split_points = np.array([np.array(mst.nodes[index]['pos']) for index in split_nodes])
+                        plotter.add_mesh(leaf_points, color='green', point_size=6)
+                        plotter.add_mesh(split_points, color='black', point_size=6)
+                        plotter.show()
+        return mst_copy            
+    
+    #happens after finding best centerline
+    @staticmethod
+    def clean_sharp_angles(mst: nx.Graph):
+        
+        '''three cases:
+        1. two sharp angles adjacent to one another
+        2. bad branch point
+        3. sharp angle at the end of a vessel'''
+
+        return
+
+
 
 class CenterlineNetwork(OrderedSkeleton):
     def __init__(self):

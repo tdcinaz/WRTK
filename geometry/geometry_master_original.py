@@ -1053,9 +1053,9 @@ class COW:
 
                 arc = pv.CircularArc(pointa=projected_p1, pointb=projected_p2, center=center_point)
 
-                label_point = arc.points[int(len(arc.points) / 2)]
+                #label_point = arc.points[int(len(arc.points) / 2)]
                 
-                p.add_point_labels([label_point], [f"{angle.bifurcation_label}: {angle.angle}"], font_size=12, text_color='black')
+                #p.add_point_labels([label_point], [f"{angle.bifurcation_label}: {angle.angle}"], font_size=12, text_color='black')
 
                 p.add_mesh(arc, color='black', line_width=3)
 
@@ -1143,8 +1143,8 @@ def create_cow(
     test_cow = COW(skeleton, patient_ID)
 
     #test_cow.graph_arteries()
-    #test_cow.export_angles("angles.csv")
-    test_cow.test_graph()
+    test_cow.export_angles("angles_stroke_new.csv")
+    #test_cow.test_graph()
     return test_cow
 
 def nearest_other_start_artery(
