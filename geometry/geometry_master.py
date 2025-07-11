@@ -7,7 +7,6 @@ import pyvista as pv
 import pyacvd
 import logging
 from collections import defaultdict, deque
-from scipy.spatial import cKDTree
 import os
 import re
 from skimage.morphology import skeletonize
@@ -99,7 +98,7 @@ class Skeleton(pv.PolyData):
         #set attributes radius, artery, and connection points
         self.point_data['Radius'] = self.radii_mm.flatten()
         self.point_data["Artery"] = self.labels.flatten()
-        self._extract_start_and_end_voxels()
+        self._extract_connections()
         
     def _compute_points(self):
         points = []
@@ -140,10 +139,13 @@ class Skeleton(pv.PolyData):
         p.add_mesh(self.points)
 
         skeleton_connection_labels = np.nonzero(self.point_data['ConnectionLabel'])
+        skeleton_end_points = np.nonzero(self.point_data['EndPoints'])
 
         try:
             connection_points = self.points[skeleton_connection_labels]
+            end_points = self.points[skeleton_end_points]
             p.add_mesh(connection_points, color='purple')
+            p.add_mesh(end_points, color='black')
         except:
             None
         p.show()
@@ -217,7 +219,7 @@ class Skeleton(pv.PolyData):
         new_skeleton.point_data['Radius'] = filtered_radius
         new_skeleton.point_data['Artery'] = filtered_artery
         #might be kind of expensive to just remove two points
-        new_skeleton._extract_start_and_end_voxels()
+        new_skeleton._extract_connections()
         
         return new_skeleton
 
@@ -285,11 +287,11 @@ class Skeleton(pv.PolyData):
         new_skeleton.image = self.image
         new_skeleton.point_data['Radius'] = filtered_radius
         new_skeleton.point_data['Artery'] = filtered_artery
-        new_skeleton._extract_start_and_end_voxels()
+        new_skeleton._extract_connections()
         
         return new_skeleton
 
-    def _extract_start_and_end_voxels(self):
+    def _extract_connections(self):
         standardAdj = {
             1.0: (2.0, 3.0),            # Bas -> L-PCA, R-PCA
             2.0: (1.0, 8.0),            # L-PCA -> Bas, L-Pcom
@@ -342,17 +344,13 @@ class Skeleton(pv.PolyData):
         for idx in end_points:
             skeleton_labels[idx] = 1
         self.point_data['ConnectionLabel'] = skeleton_labels
-    
+
 class OrderedSkeleton(Skeleton):
     @classmethod
     def create_from_parent(cls, skeleton_instance: Skeleton):
         instance = cls.__new__(cls)
 
         msts = cls.find_msts(skeleton_instance)
-        
-        #plotter = pv.Plotter()
-        #plotter = cls.plot_mst(msts[0], plotter)
-        #plotter.show()
 
         cleaned = [cls.clean_short_branches(mst) for mst in msts]
 
@@ -369,7 +367,6 @@ class OrderedSkeleton(Skeleton):
         #instance.__dict__.update(skeleton_instance.__dict__)
 
         return instance
-
 
     def __init__(self, image: Image):
         #super().__init__(i)
@@ -497,7 +494,7 @@ class OrderedSkeleton(Skeleton):
         split_keep_mask &= (degrees > 2)
         split_nodes = np.where(split_keep_mask)[0]
         
-        #find what nodes are leaf nodes (terminating nodes)\
+        #find what nodes are leaf nodes (terminating nodes)
         '''CONNECTION POINTS OR FURTHEST GEODESIC POINTS ARE NOT ALLOWED TO BE LEAF NODES'''
         leaf_keep_mask = np.ones(len(degrees), dtype=bool)
         leaf_keep_mask &= (degrees == 1)
@@ -541,7 +538,6 @@ class OrderedSkeleton(Skeleton):
                             #try to insert it between those two
                             #if vector is still too long then get rid of the point
                     except:
-                        point_failure_indexes = [leaf_node, target_point, split_node]
                         plotter = pv.Plotter()
                         plotter = OrderedSkeleton.plot_mst(mst, plotter)
 
@@ -562,7 +558,6 @@ class OrderedSkeleton(Skeleton):
         3. sharp angle at the end of a vessel'''
 
         return
-
 
 
 class CenterlineNetwork(OrderedSkeleton):
