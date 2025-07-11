@@ -559,7 +559,6 @@ class OrderedSkeleton(Skeleton):
 
         return
 
-
 class CenterlineNetwork(OrderedSkeleton):
     def __init__(self):
         return
