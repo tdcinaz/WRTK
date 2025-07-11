@@ -1,7 +1,6 @@
 import numpy as np
 import pyvista as pv
 from scipy.interpolate import CubicHermiteSpline
-from collections import defaultdict
 from typing import Dict, List, Tuple, Set, Optional
 
 __all__ = [
@@ -16,14 +15,14 @@ __all__ = [
 _TOL = 1e-6  # distance tolerance used to match shared junction points
 
 
-def _normalize(v: np.ndarray) -> np.ndarray:
-    """Return *v* normalised (safe if ‖v‖ ≈ 0)."""
-    n = np.linalg.norm(v)
-    return v / n if n > 0 else v
+def _normalize(vec: np.ndarray) -> np.ndarray:
+    """Return *vec* normalised (safe if ‖vec‖ ≈ 0)."""
+    n = np.linalg.norm(vec)
+    return vec / n if n > 0 else vec
 
 
 # -----------------------------------------------------------------------------
-#   Core Catmull–Rom helper (same as before, but extracted for reuse)
+#   Core Catmull–Rom helper (centripetal, optional tangent clamping)
 # -----------------------------------------------------------------------------
 
 def catmull_rom_spline_polydata(
@@ -33,21 +32,20 @@ def catmull_rom_spline_polydata(
     start_tangent: Optional[np.ndarray] = None,
     end_tangent: Optional[np.ndarray] = None,
 ) -> pv.PolyData:
-    """Return a centripetal Catmull–Rom curve through *points* as PolyData."""
+    """Return a centripetal Catmull‑Rom curve through *points* as PolyData."""
 
     if points.shape[0] < 4:
         raise ValueError("Catmull–Rom requires at least 4 control points.")
 
-    # --- centripetal knot vector (α = 0.5) ----------------------------------
+    # -- centripetal knot vector (α = 0.5) -----------------------------------
     alpha = 0.5
     t = np.zeros(len(points))
     for i in range(1, len(t)):
         t[i] = t[i - 1] + np.linalg.norm(points[i] - points[i - 1]) ** alpha
 
-    # --- default derivatives -------------------------------------------------
+    # -- default first‑derivative estimates ----------------------------------
     m = np.empty_like(points)
     m[1:-1] = (points[2:] - points[:-2]) / (t[2:, None] - t[:-2, None])
-
     if closed:
         m[0] = (points[1] - points[-2]) / (t[1] - (t[-2] - t[-1]))
         m[-1] = m[0]
@@ -55,13 +53,13 @@ def catmull_rom_spline_polydata(
         m[0] = (points[1] - points[0]) / (t[1] - t[0])
         m[-1] = (points[-1] - points[-2]) / (t[-1] - t[-2])
 
-    # --- optional end‑point clamping ----------------------------------------
+    # -- optional tangent clamping -------------------------------------------
     if (not closed) and start_tangent is not None:
         m[0] = _normalize(start_tangent) * np.linalg.norm(m[0])
     if (not closed) and end_tangent is not None:
         m[-1] = _normalize(end_tangent) * np.linalg.norm(m[-1])
 
-    # --- Hermite splines -----------------------------------------------------
+    # -- create coordinate‑wise Hermite splines ------------------------------
     xs = CubicHermiteSpline(t, points[:, 0], m[:, 0])
     ys = CubicHermiteSpline(t, points[:, 1], m[:, 1])
     zs = CubicHermiteSpline(t, points[:, 2], m[:, 2])
@@ -72,9 +70,10 @@ def catmull_rom_spline_polydata(
 
     curve_xyz = np.column_stack([xs(t_eval), ys(t_eval), zs(t_eval)])
 
-    # --- wrap into PolyData --------------------------------------------------
+    # -- wrap into PyVista PolyData ------------------------------------------
     n_pts = curve_xyz.shape[0]
     poly_line = np.hstack(([n_pts], np.arange(n_pts))).astype(np.int64)
+
     pd = pv.PolyData(curve_xyz)
     pd.lines = poly_line
     return pd
@@ -85,18 +84,13 @@ def catmull_rom_spline_polydata(
 # -----------------------------------------------------------------------------
 
 class SkeletonModel:
-    """Template Circle‑of‑Willis skeleton with *mutable* junction knots.
+    """Mutable Circle‑of‑Willis template skeleton.
 
-    Parameters
-    ----------
-    inlet : dict[str, list[tuple[float, float, float]]]
-        Mapping *name → control‑point list* for inlet arteries – these *define*
-        tangent directions for connected branches.
-    outlet, communicating : same structure for the remaining artery groups.
-    samples_per_segment : int, optional
-        Evaluation density when sampling each spline.
-    tol : float, optional
-        Distance tolerance used to identify shared junctions between arteries.
+    *Knots* (explicit artery control points) can be moved interactively; all
+    affected splines are lazily recomputed.  Endpoint clamp directions are
+    extracted **from the current splines** of connected arteries, allowing
+    smooth C¹ joins even when communicating branches attach to *mid‑points* of
+    other vessels (including outlet arteries).
     """
 
     def __init__(
@@ -110,37 +104,33 @@ class SkeletonModel:
         self.tol = tol
         self.samples_per_segment = samples_per_segment
 
-        # Store control‑points per artery as (N,3) float arrays
+        # store control points as float arrays
         self._points: Dict[str, np.ndarray] = {
             **{n: np.asarray(p, float) for n, p in inlet.items()},
             **{n: np.asarray(p, float) for n, p in outlet.items()},
             **{n: np.asarray(p, float) for n, p in communicating.items()},
         }
-        self._inlet_names: Set[str] = set(inlet)
 
-        # caches
-        self._junction_map: Dict[int, List[Tuple[str, int]]] = {}
+        # spline cache {artery → PolyData}
         self._splines: Dict[str, pv.PolyData] = {}
+
+        # mapping junction‑node‑id → List[(artery, knot‑index)]
+        self._junction_map: Dict[int, List[Tuple[str, int]]] = {}
 
         self._rebuild_junction_index()
         self._recompute_all()
 
     # ------------------------------------------------------------------
-    #   External interface
+    #   Public API
     # ------------------------------------------------------------------
 
-    def move_knot(
-        self,
-        artery: str,
-        index: int,
-        new_xyz: Tuple[float, float, float],
-    ) -> Set[str]:
-        """Move a specific control point *in‑place* and recompute dependencies.
+    def move_knot(self, artery: str, index: int, new_xyz: Tuple[float, float, float]) -> Set[str]:
+        """Move one explicit control point and recompute affected splines.
 
         Returns
         -------
         set[str]
-            Names of arteries whose splines were recomputed.
+            Artery names that were recomputed.
         """
         if artery not in self._points:
             raise KeyError(f"Unknown artery '{artery}'.")
@@ -148,24 +138,26 @@ class SkeletonModel:
         if not (0 <= index < len(pts)):
             raise IndexError("knot index out of range")
 
-        # 1. remember old coordinate, write the new one
-        old_coord = pts[index].copy()
-        pts[index] = new_xyz
+        old_xyz = pts[index].copy()
+        pts[index] = np.asarray(new_xyz, float)
 
-        # 2. rebuild the junction index (cheap – only endpoints are inspected)
+        # rebuild junction graph (cheap)
         self._rebuild_junction_index()
 
-        # 3. determine arteries that shared *either* the old or new coord
+        # arteries influenced by either old or new position
         affected: Set[str] = {artery}
-        affected |= self._arteries_sharing_point(old_coord)
+        affected |= self._arteries_sharing_point(old_xyz)
         affected |= self._arteries_sharing_point(new_xyz)
 
-        # 4. recompute affected splines
+        # --- two‑pass recompute: parents first, then children ---------------
+        # pass 1: recompute every affected artery (parents change tangents)
         for art in affected:
             self._splines[art] = self._compute_spline(art)
-        return affected
+        # pass 2: redo – ensures children pick up any updated parent tangents
+        for art in affected:
+            self._splines[art] = self._compute_spline(art)
 
-    # Convenience: accessors --------------------------------------------------
+        return affected
 
     def get_spline(self, artery: str) -> pv.PolyData:
         return self._splines[artery]
@@ -177,70 +169,75 @@ class SkeletonModel:
     #   Internal helpers
     # ------------------------------------------------------------------
 
-    def _recompute_all(self) -> None:
-        """Recompute *every* spline (used only at init or full reset)."""
-        for art in self._points:
-            self._splines[art] = self._compute_spline(art)
-
-    # ---- junction‑index construction ---------------------------------
+    # ---- junction indexing --------------------------------------------------
 
     def _rebuild_junction_index(self) -> None:
-        """Index endpoints that coincide (within *tol*) across arteries.
+        """Index *all* control‑point coordinates shared across arteries."""
+        self._junction_map.clear()
+        representatives: List[np.ndarray] = []  # 1 coord per distinct node
 
-        We consider only **first** and **last** control‑point of each artery
-        because only these contribute to tangent sharing.
-        """
-        self._junction_map = {}
-        nodes: List[np.ndarray] = []  # representative coordinate per node
-
-        def _find_node_id(p: np.ndarray) -> int:
-            for nid, rep in enumerate(nodes):
-                if np.linalg.norm(rep - p) < self.tol:
+        def _find_node_id(xyz: np.ndarray) -> int:
+            for nid, rep in enumerate(representatives):
+                if np.linalg.norm(rep - xyz) < self.tol:
                     return nid
             return -1
 
-        for name, pts in self._points.items():
-            for idx in (0, -1):
-                p = pts[idx]
+        for art, pts in self._points.items():
+            for idx, p in enumerate(pts):
                 nid = _find_node_id(p)
-                if nid == -1:  # create new node
-                    nid = len(nodes)
-                    nodes.append(p.copy())
-                self._junction_map.setdefault(nid, []).append((name, idx))
+                if nid == -1:
+                    nid = len(representatives)
+                    representatives.append(p.copy())
+                self._junction_map.setdefault(nid, []).append((art, idx))
 
     def _arteries_sharing_point(self, xyz: np.ndarray) -> Set[str]:
-        """Return all arteries that have a junction ≈ *xyz*."""
         for members in self._junction_map.values():
-            rep = self._points[members[0][0]][members[0][1]]  # representative
+            rep = self._points[members[0][0]][members[0][1]]
             if np.linalg.norm(rep - xyz) < self.tol:
                 return {art for art, _ in members}
         return set()
 
-    # ---- spline construction ------------------------------------------
+    # ---- geometry utilities -------------------------------------------------
 
-    def _parent_tangent(self, parent_pts: np.ndarray, idx: int) -> np.ndarray:
-        """Simple 3‑point finite‑difference tangent."""
+    @staticmethod
+    def _spline_tangent(poly: pv.PolyData, xyz: np.ndarray) -> Optional[np.ndarray]:
+        """Approximate tangent of *poly* at (closest) point *xyz*."""
+        pts = poly.points
+        dists = np.linalg.norm(pts - xyz, axis=1)
+        idx = dists.argmin()
+        if dists[idx] > _TOL:
+            return None  # no reasonable match
         if idx == 0:
-            return parent_pts[1] - parent_pts[0]
-        elif idx == len(parent_pts) - 1:
-            return parent_pts[-1] - parent_pts[-2]
+            tan = pts[1] - pts[0]
+        elif idx == len(pts) - 1:
+            tan = pts[-1] - pts[-2]
         else:
-            return parent_pts[idx + 1] - parent_pts[idx - 1]
+            tan = pts[idx + 1] - pts[idx - 1]
+        return tan if np.linalg.norm(tan) > 0 else None
 
-    def _matching_tangent(self, child: str, point: np.ndarray) -> Optional[np.ndarray]:
-        """Return tangent from *another* artery sharing *point*, if any."""
+    def _matching_tangent(self, child: str, xyz: np.ndarray) -> Optional[np.ndarray]:
+        """Search arteries sharing *xyz* (excluding *child*) and return spline tangent."""
         for members in self._junction_map.values():
-            shared = [m for m in members if np.linalg.norm(self._points[m[0]][m[1]] - point) < self.tol]
-            if shared:
-                for art, idx in members:
-                    if art != child and art in self._inlet_names:  # only inlet provide tangents
-                        return self._parent_tangent(self._points[art], idx)
+            rep_xyz = self._points[members[0][0]][members[0][1]]
+            if np.linalg.norm(rep_xyz - xyz) >= self.tol:
+                continue
+            for art, _ in members:
+                if art == child:
+                    continue
+                parent_spline = self._splines.get(art)
+                if parent_spline is None:
+                    continue  # parent not computed yet
+                tan = self._spline_tangent(parent_spline, xyz)
+                if tan is not None:
+                    return tan
         return None
 
-    def _compute_spline(self, name: str) -> pv.PolyData:
-        pts = self._points[name]
-        start_tan = self._matching_tangent(name, pts[0])
-        end_tan = self._matching_tangent(name, pts[-1])
+    # ---- spline (re)generation ---------------------------------------------
+
+    def _compute_spline(self, art: str) -> pv.PolyData:
+        pts = self._points[art]
+        start_tan = self._matching_tangent(art, pts[0])
+        end_tan = self._matching_tangent(art, pts[-1])
         return catmull_rom_spline_polydata(
             pts.copy(),
             samples_per_segment=self.samples_per_segment,
@@ -248,13 +245,20 @@ class SkeletonModel:
             end_tangent=end_tan,
         )
 
+    def _recompute_all(self) -> None:
+        for art in self._points:
+            self._splines[art] = self._compute_spline(art)
+        # one additional pass so children capture fresh parent tangents
+        for art in self._points:
+            self._splines[art] = self._compute_spline(art)
+
 
 # -----------------------------------------------------------------------------
-#   Example usage (run as a script to test)
+#   Example usage
 # -----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # --- control‑point dictionaries identical to the previous example --------
+    # (same control‑point dictionaries as before)
     inlet_arteries = {
         "BA": [(-4.5, 0, -5), (-4, 0, -4), (-4, 0, -3), (-4, 0, -2), (-4.5, 0, -1), (-5, 0, 0)],
         "RICA": [(2, -4, -4.5), (4, -4, -4), (5.5, -4, -3), (5, -4, -1.5), (3.5, -4, -1),
@@ -286,15 +290,15 @@ if __name__ == "__main__":
         "ACOM": [(4.5, -1, 4), (4.5, -0.5, 4), (4.5, 0, 4), (4.5, 0.5, 4), (4.5, 1, 4)],
     }
 
-    # --- build skeleton ------------------------------------------------------
     skel = SkeletonModel(inlet_arteries, outlet_arteries, communicating_arteries)
 
-    # Move one control point to demonstrate dynamic update
-    moved = skel.move_knot("RPCA", 0, (-5.2, -0.2, 0.1))
-    print("Recomputed:", moved)
+    # demonstrate dynamic adjustment
+    #changed = skel.move_knot("RPCOM", 0, (-5.2, -4.1, -0.1))
+    #print("Recomputed:", changed)
 
-    # Visualise ---------------------------------------------------------------
-    plotter = pv.Plotter()
+    # visualise
+    pl = pv.Plotter()
     for poly in skel.all_splines().values():
-        plotter.add_mesh(poly, line_width=6, render_lines_as_tubes=True)
-    plotter.show()
+        pl.add_mesh(poly, line_width=6, render_lines_as_tubes=True)
+    pl.camera_position = 'xy'
+    pl.show()
