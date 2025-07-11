@@ -1,196 +1,300 @@
-"""template_skeleton.py
-================================================
-Stage‑1 scaffold for building a *template* Circle‑of‑Willis centre‑line skeleton.
-
-This **fixed** edition separates *graph topology* from the cached spline
-samples, so edges are now always generated when you ask to plot or export the
-skeleton.
-"""
-from __future__ import annotations
-
-import itertools
-from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Set, Tuple
-
 import numpy as np
+import pyvista as pv
 from scipy.interpolate import CubicHermiteSpline
+from collections import defaultdict
+from typing import Dict, List, Tuple, Set, Optional
+
+__all__ = [
+    "SkeletonModel",
+    "catmull_rom_spline_polydata",
+]
 
 # -----------------------------------------------------------------------------
-# Data containers
+#   Low‑level utilities
 # -----------------------------------------------------------------------------
 
-@dataclass
-class Node:
-    id: str
-    xyz: np.ndarray  # shape (3,)
+_TOL = 1e-6  # distance tolerance used to match shared junction points
 
-    def __post_init__(self) -> None:  # sanity guard
-        self.xyz = np.asarray(self.xyz, float)
-        if self.xyz.shape != (3,):
-            raise ValueError("xyz must be length‑3")
 
-EdgeKey = Tuple[str, str]
+def _normalize(v: np.ndarray) -> np.ndarray:
+    """Return *v* normalised (safe if ‖v‖ ≈ 0)."""
+    n = np.linalg.norm(v)
+    return v / n if n > 0 else v
 
-def ek(a: str, b: str) -> EdgeKey:  # canonical key (unordered)
-    return tuple(sorted((a, b)))
 
 # -----------------------------------------------------------------------------
-# Core skeleton graph
+#   Core Catmull–Rom helper (same as before, but extracted for reuse)
 # -----------------------------------------------------------------------------
 
-@dataclass
-class TemplateSkeleton:
-    """Graph of nodes + cached C¹‑continuous splines on each edge."""
+def catmull_rom_spline_polydata(
+    points: np.ndarray,
+    samples_per_segment: int = 25,
+    closed: bool = False,
+    start_tangent: Optional[np.ndarray] = None,
+    end_tangent: Optional[np.ndarray] = None,
+) -> pv.PolyData:
+    """Return a centripetal Catmull–Rom curve through *points* as PolyData."""
 
-    samples_per_edge: int = 100
+    if points.shape[0] < 4:
+        raise ValueError("Catmull–Rom requires at least 4 control points.")
 
-    _nodes: Dict[str, Node] = field(default_factory=dict, init=False, repr=False)
-    _adjacent: Set[EdgeKey] = field(default_factory=set, init=False, repr=False)  # topology only
-    _edges: Dict[EdgeKey, np.ndarray] = field(default_factory=dict, init=False, repr=False)  # cache
+    # --- centripetal knot vector (α = 0.5) ----------------------------------
+    alpha = 0.5
+    t = np.zeros(len(points))
+    for i in range(1, len(t)):
+        t[i] = t[i - 1] + np.linalg.norm(points[i] - points[i - 1]) ** alpha
 
-    # ---------------------------------------------------------------------
-    # Construction
-    # ---------------------------------------------------------------------
+    # --- default derivatives -------------------------------------------------
+    m = np.empty_like(points)
+    m[1:-1] = (points[2:] - points[:-2]) / (t[2:, None] - t[:-2, None])
 
-    def add_node(self, node_id: str, xyz: Iterable[float]) -> None:
-        """Insert or update a control point."""
-        self._nodes[node_id] = Node(str(node_id), xyz)
-        # Moving or adding → purge curves touching this node
-        self._invalidate_edges(node_id)
+    if closed:
+        m[0] = (points[1] - points[-2]) / (t[1] - (t[-2] - t[-1]))
+        m[-1] = m[0]
+    else:
+        m[0] = (points[1] - points[0]) / (t[1] - t[0])
+        m[-1] = (points[-1] - points[-2]) / (t[-1] - t[-2])
 
-    def connect(self, a: str, b: str) -> None:
-        """Declare an undirected edge between *a* and *b*."""
-        if a not in self._nodes or b not in self._nodes:
-            raise KeyError("Both nodes must exist before connecting")
-        self._adjacent.add(ek(a, b))
-        self._edges.pop(ek(a, b), None)  # ensure spline is regenerated
+    # --- optional end‑point clamping ----------------------------------------
+    if (not closed) and start_tangent is not None:
+        m[0] = _normalize(start_tangent) * np.linalg.norm(m[0])
+    if (not closed) and end_tangent is not None:
+        m[-1] = _normalize(end_tangent) * np.linalg.norm(m[-1])
 
-    # ---------------------------------------------------------------------
-    # Modification
-    # ---------------------------------------------------------------------
+    # --- Hermite splines -----------------------------------------------------
+    xs = CubicHermiteSpline(t, points[:, 0], m[:, 0])
+    ys = CubicHermiteSpline(t, points[:, 1], m[:, 1])
+    zs = CubicHermiteSpline(t, points[:, 2], m[:, 2])
 
-    def move_node(self, node_id: str, new_xyz: Iterable[float]) -> None:
-        if node_id not in self._nodes:
-            raise KeyError(node_id)
-        self._nodes[node_id].xyz = np.asarray(new_xyz, float)
-        self._invalidate_edges(node_id)
+    n_seg = len(points) - 1 if not closed else len(points)
+    n_eval = n_seg * samples_per_segment + 1
+    t_eval = np.linspace(t[0], t[-1], n_eval)
 
-    def _invalidate_edges(self, node_id: str) -> None:
-        for e in list(self._edges):
-            if node_id in e:
-                self._edges.pop(e)
+    curve_xyz = np.column_stack([xs(t_eval), ys(t_eval), zs(t_eval)])
 
-    # ---------------------------------------------------------------------
-    # Queries
-    # ---------------------------------------------------------------------
+    # --- wrap into PolyData --------------------------------------------------
+    n_pts = curve_xyz.shape[0]
+    poly_line = np.hstack(([n_pts], np.arange(n_pts))).astype(np.int64)
+    pd = pv.PolyData(curve_xyz)
+    pd.lines = poly_line
+    return pd
 
-    def node_coords(self, node_id: str) -> np.ndarray:
-        return self._nodes[node_id].xyz
 
-    def edge_curve(self, a: str, b: str) -> np.ndarray:
-        key = ek(a, b)
-        if key not in self._adjacent:
-            raise KeyError(f"Nodes {a}–{b} are not connected")
-        if key not in self._edges:  # lazy generation
-            self._edges[key] = self._build_curve(a, b)
-        return self._edges[key]
+# -----------------------------------------------------------------------------
+#   Skeleton model – dynamic & efficient recomputation
+# -----------------------------------------------------------------------------
+
+class SkeletonModel:
+    """Template Circle‑of‑Willis skeleton with *mutable* junction knots.
+
+    Parameters
+    ----------
+    inlet : dict[str, list[tuple[float, float, float]]]
+        Mapping *name → control‑point list* for inlet arteries – these *define*
+        tangent directions for connected branches.
+    outlet, communicating : same structure for the remaining artery groups.
+    samples_per_segment : int, optional
+        Evaluation density when sampling each spline.
+    tol : float, optional
+        Distance tolerance used to identify shared junctions between arteries.
+    """
+
+    def __init__(
+        self,
+        inlet: Dict[str, List[Tuple[float, float, float]]],
+        outlet: Dict[str, List[Tuple[float, float, float]]],
+        communicating: Dict[str, List[Tuple[float, float, float]]],
+        samples_per_segment: int = 25,
+        tol: float = _TOL,
+    ) -> None:
+        self.tol = tol
+        self.samples_per_segment = samples_per_segment
+
+        # Store control‑points per artery as (N,3) float arrays
+        self._points: Dict[str, np.ndarray] = {
+            **{n: np.asarray(p, float) for n, p in inlet.items()},
+            **{n: np.asarray(p, float) for n, p in outlet.items()},
+            **{n: np.asarray(p, float) for n, p in communicating.items()},
+        }
+        self._inlet_names: Set[str] = set(inlet)
+
+        # caches
+        self._junction_map: Dict[int, List[Tuple[str, int]]] = {}
+        self._splines: Dict[str, pv.PolyData] = {}
+
+        self._rebuild_junction_index()
+        self._recompute_all()
 
     # ------------------------------------------------------------------
-    # Export & visualisation helpers
+    #   External interface
     # ------------------------------------------------------------------
 
-    def as_line_set(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Return (points, lines) arrays for *pyvista.PolyData*."""
-        pts_list: List[np.ndarray] = []
-        lines: List[int] = []
-        offset = 0
-        for a, b in self._adjacent:
-            curve = self.edge_curve(a, b)  # ensures cached
-            n = len(curve)
-            pts_list.append(curve)
-            lines.extend([n] + list(range(offset, offset + n)))
-            offset += n
-        if not pts_list:
-            return np.empty((0, 3)), np.empty((0,), int)
-        return np.vstack(pts_list), np.asarray(lines, int)
+    def move_knot(
+        self,
+        artery: str,
+        index: int,
+        new_xyz: Tuple[float, float, float],
+    ) -> Set[str]:
+        """Move a specific control point *in‑place* and recompute dependencies.
 
-    def to_pyvista(self):  # noqa: D401
-        if not _has_pyvista():
-            raise RuntimeError("PyVista not installed; `pip install pyvista`.")
-        import pyvista as pv  # local import
-        pts, lines = self.as_line_set()
-        poly = pv.PolyData()
-        if pts.size:
-            poly.points = pts
-            poly.lines = lines
-        return poly
+        Returns
+        -------
+        set[str]
+            Names of arteries whose splines were recomputed.
+        """
+        if artery not in self._points:
+            raise KeyError(f"Unknown artery '{artery}'.")
+        pts = self._points[artery]
+        if not (0 <= index < len(pts)):
+            raise IndexError("knot index out of range")
+
+        # 1. remember old coordinate, write the new one
+        old_coord = pts[index].copy()
+        pts[index] = new_xyz
+
+        # 2. rebuild the junction index (cheap – only endpoints are inspected)
+        self._rebuild_junction_index()
+
+        # 3. determine arteries that shared *either* the old or new coord
+        affected: Set[str] = {artery}
+        affected |= self._arteries_sharing_point(old_coord)
+        affected |= self._arteries_sharing_point(new_xyz)
+
+        # 4. recompute affected splines
+        for art in affected:
+            self._splines[art] = self._compute_spline(art)
+        return affected
+
+    # Convenience: accessors --------------------------------------------------
+
+    def get_spline(self, artery: str) -> pv.PolyData:
+        return self._splines[artery]
+
+    def all_splines(self) -> Dict[str, pv.PolyData]:
+        return self._splines
 
     # ------------------------------------------------------------------
-    # Internal – spline generation
+    #   Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_curve(self, a: str, b: str) -> np.ndarray:
-        p0, p1 = self._nodes[a].xyz, self._nodes[b].xyz
-        t0 = self._approx_tangent(node=a, other=b)
-        t1 = self._approx_tangent(node=b, other=a)
+    def _recompute_all(self) -> None:
+        """Recompute *every* spline (used only at init or full reset)."""
+        for art in self._points:
+            self._splines[art] = self._compute_spline(art)
 
-        ts = np.linspace(0.0, 1.0, self.samples_per_edge)
-        curve = np.empty((self.samples_per_edge, 3))
-        for d in range(3):
-            cs = CubicHermiteSpline([0, 1], [p0[d], p1[d]], [t0[d], t1[d]])
-            curve[:, d] = cs(ts)
-        return curve
+    # ---- junction‑index construction ---------------------------------
 
-    def _approx_tangent(self, *, node: str, other: str) -> np.ndarray:
-        neighbours = [n for e in self._adjacent for n in e if node in e and n != node]
-        neighbours = [n for n in neighbours if n != other]
-        if neighbours:
-            prev = neighbours[0]
-            tangent = self._nodes[other].xyz - self._nodes[prev].xyz
-        else:  # endpoint
-            tangent = self._nodes[other].xyz - self._nodes[node].xyz
-        norm = np.linalg.norm(tangent)
-        return tangent / (norm + 1e-8)
+    def _rebuild_junction_index(self) -> None:
+        """Index endpoints that coincide (within *tol*) across arteries.
+
+        We consider only **first** and **last** control‑point of each artery
+        because only these contribute to tangent sharing.
+        """
+        self._junction_map = {}
+        nodes: List[np.ndarray] = []  # representative coordinate per node
+
+        def _find_node_id(p: np.ndarray) -> int:
+            for nid, rep in enumerate(nodes):
+                if np.linalg.norm(rep - p) < self.tol:
+                    return nid
+            return -1
+
+        for name, pts in self._points.items():
+            for idx in (0, -1):
+                p = pts[idx]
+                nid = _find_node_id(p)
+                if nid == -1:  # create new node
+                    nid = len(nodes)
+                    nodes.append(p.copy())
+                self._junction_map.setdefault(nid, []).append((name, idx))
+
+    def _arteries_sharing_point(self, xyz: np.ndarray) -> Set[str]:
+        """Return all arteries that have a junction ≈ *xyz*."""
+        for members in self._junction_map.values():
+            rep = self._points[members[0][0]][members[0][1]]  # representative
+            if np.linalg.norm(rep - xyz) < self.tol:
+                return {art for art, _ in members}
+        return set()
+
+    # ---- spline construction ------------------------------------------
+
+    def _parent_tangent(self, parent_pts: np.ndarray, idx: int) -> np.ndarray:
+        """Simple 3‑point finite‑difference tangent."""
+        if idx == 0:
+            return parent_pts[1] - parent_pts[0]
+        elif idx == len(parent_pts) - 1:
+            return parent_pts[-1] - parent_pts[-2]
+        else:
+            return parent_pts[idx + 1] - parent_pts[idx - 1]
+
+    def _matching_tangent(self, child: str, point: np.ndarray) -> Optional[np.ndarray]:
+        """Return tangent from *another* artery sharing *point*, if any."""
+        for members in self._junction_map.values():
+            shared = [m for m in members if np.linalg.norm(self._points[m[0]][m[1]] - point) < self.tol]
+            if shared:
+                for art, idx in members:
+                    if art != child and art in self._inlet_names:  # only inlet provide tangents
+                        return self._parent_tangent(self._points[art], idx)
+        return None
+
+    def _compute_spline(self, name: str) -> pv.PolyData:
+        pts = self._points[name]
+        start_tan = self._matching_tangent(name, pts[0])
+        end_tan = self._matching_tangent(name, pts[-1])
+        return catmull_rom_spline_polydata(
+            pts.copy(),
+            samples_per_segment=self.samples_per_segment,
+            start_tangent=start_tan,
+            end_tangent=end_tan,
+        )
+
 
 # -----------------------------------------------------------------------------
-# Convenience
-# -----------------------------------------------------------------------------
-
-def _has_pyvista() -> bool:  # pragma: no cover
-    try:
-        import pyvista  # noqa: F401
-    except ModuleNotFoundError:
-        return False
-    return True
-
-# -----------------------------------------------------------------------------
-# Demo (run `python template_skeleton.py`)
+#   Example usage (run as a script to test)
 # -----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    sk = TemplateSkeleton(samples_per_edge=50)
+    # --- control‑point dictionaries identical to the previous example --------
+    inlet_arteries = {
+        "BA": [(-4.5, 0, -5), (-4, 0, -4), (-4, 0, -3), (-4, 0, -2), (-4.5, 0, -1), (-5, 0, 0)],
+        "RICA": [(2, -4, -4.5), (4, -4, -4), (5.5, -4, -3), (5, -4, -1.5), (3.5, -4, -1),
+                  (2, -4, 0), (2, -3.5, 1.5), (3, -3, 2.5)],
+        "LICA": [(2, 4, -4.5), (4, 4, -4), (5.5, 4, -3), (5, 4, -1.5), (3.5, 4, -1),
+                  (2, 4, 0), (2, 3.5, 1.5), (3, 3, 2.5)],
+    }
 
-    # Nodes (toy example)
-    sk.add_node("BA", (0, 0, -10))
-    sk.add_node("PCA_R", (5, 0, -5))
-    sk.add_node("PCA_L", (-5, 0, -5))
-    sk.add_node("ICA_R", (7, 0, 0))
-    sk.add_node("ICA_L", (-7, 0, 0))
-    sk.add_node("ACA_R", (3, 0, 5))
-    sk.add_node("ACA_L", (-3, 0, 5))
+    outlet_arteries = {
+        "RPCA": [(-5, 0, 0), (-5, -1, 0.5), (-5, -2, 0.5), (-5, -3, 0), (-5, -4, 0),
+                  (-5, -5, 0), (-5, -6, -0.5), (-5.5, -7, -0.5), (-6, -8, 0), (-6, -9, 1)],
+        "LPCA": [(-5, 0, 0), (-5, 1, 0.5), (-5, 2, 0.5), (-5, 3, 0), (-5, 4, 0),
+                  (-5, 5, 0), (-5, 6, -0.5), (-5.5, 7, -0.5), (-6, 8, 0), (-6, 9, 1)],
+        "RMCA": [(3, -3, 2.5), (3.5, -4, 3.5), (4, -5, 4), (4.5, -6, 4), (4.5, -7, 4),
+                  (4.5, -8, 4), (4.5, -9, 4.5)],
+        "LMCA": [(3, 3, 2.5), (3.5, 4, 3.5), (4, 5, 4), (4.5, 6, 4), (4.5, 7, 4),
+                  (4.5, 8, 4), (4.5, 9, 4.5)],
+        "RACA": [(3, -3, 2.5), (4, -2, 3.5), (4.5, -1, 4), (5.5, -0.5, 5), (6, -0.5, 6.5),
+                  (6.5, -0.5, 7.5), (7, -0.5, 8.5), (7, -1, 9.5)],
+        "LACA": [(3, 3, 2.5), (4, 2, 3.5), (4.5, 1, 4), (5.5, 0.5, 5), (6, 0.5, 6.5),
+                  (6.5, 0.5, 7.5), (7, 0.5, 8.5), (7, 1, 9.5)],
+    }
 
-    # Edges
-    for a, b in [
-        ("BA", "PCA_R"), ("BA", "PCA_L"),
-        ("PCA_R", "ICA_R"), ("PCA_L", "ICA_L"),
-        ("ICA_R", "ACA_R"), ("ICA_L", "ACA_L"),
-        ("ACA_R", "ACA_L"), ("ICA_R", "ICA_L"),
-    ]:
-        sk.connect(a, b)
+    communicating_arteries = {
+        "RPCOM": [(-5, -4, 0), (-4, -3.5, 0), (-3, -3, -0.5), (-2, -2.5, -0.5),
+                   (-1, -2.5, -0.5), (0, -3, 0), (1, -3.5, 0.5), (2, -4, 0)],
+        "LPCOM": [(-5, 4, 0), (-4, 3.5, 0), (-3, 3, -0.5), (-2, 2.5, -0.5),
+                   (-1, 2.5, -0.5), (0, 3, 0), (1, 3.5, 0.5), (2, 4, 0)],
+        "ACOM": [(4.5, -1, 4), (4.5, -0.5, 4), (4.5, 0, 4), (4.5, 0.5, 4), (4.5, 1, 4)],
+    }
 
-    sk.to_pyvista().plot(line_width=4)
-    # Move a node – curves auto‑invalidate
-    sk.move_node("ICA_R", (10, 0, 0))
+    # --- build skeleton ------------------------------------------------------
+    skel = SkeletonModel(inlet_arteries, outlet_arteries, communicating_arteries)
 
-    sk.to_pyvista().plot(line_width=4)
+    # Move one control point to demonstrate dynamic update
+    moved = skel.move_knot("RPCA", 0, (-5.2, -0.2, 0.1))
+    print("Recomputed:", moved)
 
+    # Visualise ---------------------------------------------------------------
+    plotter = pv.Plotter()
+    for poly in skel.all_splines().values():
+        plotter.add_mesh(poly, line_width=6, render_lines_as_tubes=True)
+    plotter.show()
