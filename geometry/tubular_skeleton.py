@@ -378,7 +378,6 @@ class Skeleton(pv.PolyData):
             nearest_point_label = labels[nearest]
             current_point_label = labels[idx]
             connection = f"{vessel_labels[nearest_point_label]}/{vessel_labels[current_point_label]}"
-            print(connection)
             if connection in order:
                 insertion_index = order.index(connection)
                 new_point = (nearest_point + current_point) / 2
@@ -386,7 +385,7 @@ class Skeleton(pv.PolyData):
             else:
                 continue
         
-        self.anchor_points = np.unique(self.anchor_points, axis=0)
+        self.anchor_points = np.array(self.anchor_points)
         
 class SkeletonModel:
     """Mutable Circle‑of‑Willis template skeleton.
@@ -524,16 +523,26 @@ class SkeletonModel:
         return all_arteries
 
     def transform(self, skeleton: Skeleton):
+
         model_anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
                                   (1, 3.5, 0.5), (4, -2, 3.5), (4, 2, 3.5), 
-                                  (3.5, 4, 3.5), (3.5, -4, 3.5), (-4, 3.5, 0), 
+                                  (4.5, 6, 4), (4.5, -6, 4), (-4, 3.5, 0), 
                                   (-4, -3.5, 0)])
+        
         skeleton_anchor_points = skeleton.anchor_points
 
-        tform = transform.estimate_transform('affine', skeleton_anchor_points, model_anchor_points)
-        transformation_matrix = tform.params
+        tform = transform.estimate_transform('similarity', model_anchor_points, skeleton_anchor_points)
         
-        return transformation_matrix
+        similarity_matrix = tform.params
+        
+        homogenous_points = np.hstack([model_anchor_points, np.ones((model_anchor_points.shape[0], 1))])
+        transformed_homogenous = (similarity_matrix @ homogenous_points.T).T
+        transformed_points = transformed_homogenous[:, :3]
+
+        tform = transform.estimate_transform('affine', transformed_points, skeleton_anchor_points)
+        affine_matrix = tform.params
+
+        return similarity_matrix, affine_matrix
 
     def move_knot(self, artery: str, index: int, new_xyz: Tuple[float, float, float]) -> Set[str]:
         """Move one explicit control point and recompute affected splines.
@@ -683,12 +692,18 @@ class SkeletonModel:
         plotter.show()
 
     def plot_transform(self, skeleton):
-        transform_matrix = self.transform(skeleton)
+        similarity_matrix, affine_matrix = self.transform(skeleton)
         homogenous_points = np.hstack([self.points_list, np.ones((self.points_list.shape[0], 1))])
-        transformed_homogenous = (transform_matrix @ homogenous_points.T).T
+        transformed_homogenous = (similarity_matrix @ homogenous_points.T)
+        transformed_homogenous = (affine_matrix @ transformed_homogenous).T
+
         transformed_points = transformed_homogenous[:, :3]
+
         plotter = pv.Plotter()
-        plotter.add_mesh(transformed_points, color='red', render_points_as_spheres=True, point_size=10)
+        points = pv.PolyData(transformed_points)
+        plotter.add_mesh(points, color='red', render_points_as_spheres=True, point_size=10)
+        plotter.add_mesh(skeleton.points, color='black', render_points_as_spheres=True, point_size=6)
+
         plotter.show()
     
 class Point:
