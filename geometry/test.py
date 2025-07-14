@@ -1,16 +1,14 @@
-import geometry_master
-from geometry_master import Image, Skeleton, OrderedSkeleton
+from tubular_skeleton import Image, Skeleton, SkeletonModel
 import itertools
 import numpy as np
 
-input = "training/labelsTr/topcow_301.nii.gz"
+
+input = "training/labelsTr/topcow_307.nii.gz"
 
 pv_image = Image(input)
 
 
 skeleton = pv_image.create_skeleton()
-skeleton = skeleton.filter_out_artery_points([4, 6])
+template = SkeletonModel()
 
-#skeleton.plot()
-
-ordered_skeleton = OrderedSkeleton.create_from_parent(skeleton)
+template.plot_transform(skeleton)
