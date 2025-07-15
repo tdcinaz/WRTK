@@ -405,9 +405,8 @@ class SkeletonModel:
         self.tol = tol
         self.samples_per_segment = samples_per_segment
         
-        self.points = self.compute_points()
-        
-        inlet_arteries = {
+        #all important points in a dictionary or list
+        self.inlet_arteries = {
             "BA": [(-4.5, 0, -5), (-4, 0, -4), (-4, 0, -3), (-4, 0, -2), (-4.5, 0, -1), (-5, 0, 0)],
             "RICA": [(2, -4, -4.5), (4, -4, -4), (5.5, -4, -3), (5, -4, -1.5), (3.5, -4, -1),
                     (2, -4, 0), (2, -3.5, 1.5), (3, -3, 2.5)],
@@ -415,7 +414,7 @@ class SkeletonModel:
                     (2, 4, 0), (2, 3.5, 1.5), (3, 3, 2.5)],
         }
 
-        outlet_arteries = {
+        self.outlet_arteries = {
             "RPCA": [(-5, 0, 0), (-5, -1, 0.5), (-5, -2, 0.5), (-5, -3, 0), (-5, -4, 0),
                     (-5, -5, 0), (-5, -6, -0.5), (-5.5, -7, -0.5), (-6, -8, 0), (-6, -9, 1)],
             "LPCA": [(-5, 0, 0), (-5, 1, 0.5), (-5, 2, 0.5), (-5, 3, 0), (-5, 4, 0),
@@ -430,19 +429,28 @@ class SkeletonModel:
                     (6.5, 0.5, 7.5), (7, 0.5, 8.5), (7, 1, 9.5)],
         }
 
-        communicating_arteries = {
+        self.communicating_arteries = {
             "RPCOM": [(-5, -4, 0), (-4, -3.5, 0), (-3, -3, -0.5), (-2, -2.5, -0.5),
                     (-1, -2.5, -0.5), (0, -3, 0), (1, -3.5, 0.5), (2, -4, 0)],
             "LPCOM": [(-5, 4, 0), (-4, 3.5, 0), (-3, 3, -0.5), (-2, 2.5, -0.5),
                     (-1, 2.5, -0.5), (0, 3, 0), (1, 3.5, 0.5), (2, 4, 0)],
             "ACOM": [(4.5, -1, 4), (4.5, -0.5, 4), (4.5, 0, 4), (4.5, 0.5, 4), (4.5, 1, 4)],
         }
+        
+        self.anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
+                                  (1, 3.5, 0.5), (4, -2, 3.5), (4, 2, 3.5), 
+                                  (3.5, 4, 3.5), (3.5, -4, 3.5), (-4, 3.5, 0), 
+                                  (-4, -3.5, 0)])
+        
+        self.points = self.compute_all_points()
+        self.points_list = list(self.points.values())
+        self.compute_all_tangents()
 
         # store control points as float arrays
         self._points: Dict[str, np.ndarray] = {
-            **{n: np.asarray(p, float) for n, p in inlet_arteries.items()},
-            **{n: np.asarray(p, float) for n, p in outlet_arteries.items()},
-            **{n: np.asarray(p, float) for n, p in communicating_arteries.items()},
+            **{n: np.asarray(p, float) for n, p in self.inlet_arteries.items()},
+            **{n: np.asarray(p, float) for n, p in self.outlet_arteries.items()},
+            **{n: np.asarray(p, float) for n, p in self.communicating_arteries.items()},
         }
         
         self.points_list = np.vstack(list(self._points.values()))
@@ -459,40 +467,9 @@ class SkeletonModel:
     # ------------------------------------------------------------------
     #   Public API
     # ------------------------------------------------------------------
-    def compute_points(self):
+    def compute_all_points(self):
         
-        inlet_arteries = {
-            "BA": [(-4.5, 0, -5), (-4, 0, -4), (-4, 0, -3), (-4, 0, -2), (-4.5, 0, -1), (-5, 0, 0)],
-            "RICA": [(2, -4, -4.5), (4, -4, -4), (5.5, -4, -3), (5, -4, -1.5), (3.5, -4, -1),
-                    (2, -4, 0), (2, -3.5, 1.5), (3, -3, 2.5)],
-            "LICA": [(2, 4, -4.5), (4, 4, -4), (5.5, 4, -3), (5, 4, -1.5), (3.5, 4, -1),
-                    (2, 4, 0), (2, 3.5, 1.5), (3, 3, 2.5)],
-        }
-
-        outlet_arteries = {
-            "RPCA": [(-5, 0, 0), (-5, -1, 0.5), (-5, -2, 0.5), (-5, -3, 0), (-5, -4, 0),
-                    (-5, -5, 0), (-5, -6, -0.5), (-5.5, -7, -0.5), (-6, -8, 0), (-6, -9, 1)],
-            "LPCA": [(-5, 0, 0), (-5, 1, 0.5), (-5, 2, 0.5), (-5, 3, 0), (-5, 4, 0),
-                    (-5, 5, 0), (-5, 6, -0.5), (-5.5, 7, -0.5), (-6, 8, 0), (-6, 9, 1)],
-            "RMCA": [(3, -3, 2.5), (3.5, -4, 3.5), (4, -5, 4), (4.5, -6, 4), (4.5, -7, 4),
-                    (4.5, -8, 4), (4.5, -9, 4.5)],
-            "LMCA": [(3, 3, 2.5), (3.5, 4, 3.5), (4, 5, 4), (4.5, 6, 4), (4.5, 7, 4),
-                    (4.5, 8, 4), (4.5, 9, 4.5)],
-            "RACA": [(3, -3, 2.5), (4, -2, 3.5), (4.5, -1, 4), (5.5, -0.5, 5), (6, -0.5, 6.5),
-                    (6.5, -0.5, 7.5), (7, -0.5, 8.5), (7, -1, 9.5)],
-            "LACA": [(3, 3, 2.5), (4, 2, 3.5), (4.5, 1, 4), (5.5, 0.5, 5), (6, 0.5, 6.5),
-                    (6.5, 0.5, 7.5), (7, 0.5, 8.5), (7, 1, 9.5)],
-        }
-
-        communicating_arteries = {
-            "RPCOM": [(-5, -4, 0), (-4, -3.5, 0), (-3, -3, -0.5), (-2, -2.5, -0.5),
-                    (-1, -2.5, -0.5), (0, -3, 0), (1, -3.5, 0.5), (2, -4, 0)],
-            "LPCOM": [(-5, 4, 0), (-4, 3.5, 0), (-3, 3, -0.5), (-2, 2.5, -0.5),
-                    (-1, 2.5, -0.5), (0, 3, 0), (1, 3.5, 0.5), (2, 4, 0)],
-            "ACOM": [(4.5, -1, 4), (4.5, -0.5, 4), (4.5, 0, 4), (4.5, 0.5, 4), (4.5, 1, 4)],
-        }
-        
-        all_arteries = {**outlet_arteries, **inlet_arteries, **communicating_arteries}
+        all_arteries = {**self.outlet_arteries, **self.inlet_arteries, **self.communicating_arteries}
         all_points = {}
 
         for artery, point_list in all_arteries.items():
@@ -505,23 +482,48 @@ class SkeletonModel:
                     all_points[point] = new_label
         
         points = []
+
         for point, labels in all_points.items():
-            points.append(Point(point, labels))
+            points.append(Point(np.array(point), labels))
         
         for point in points:
             point.find_artery_type()
+            point.is_anchor_point(self.anchor_points)
 
         for artery, point_list in all_arteries.items():
             new_point_list = []
             for target_point in point_list:
                 for new_point in points:
-                    if target_point == new_point.coords:
+                    if (target_point == new_point.coords).all():
                         new_point_list.append(new_point)
                         all_arteries[artery] = new_point_list
                         continue
 
         return all_arteries
 
+    def compute_all_tangents(self):
+        order = list(self.inlet_arteries.keys()) + list(self.outlet_arteries.keys()) + list(self.communicating_arteries.keys())
+        reordered_dict = {artery: self.points[artery] for artery in order}
+
+        for artery, points in reordered_dict.items():
+            for idx, point in enumerate(points):
+                point_type = point.artery_type
+                if point_type == "connection":
+                    highest_hierarchy_artery = point.find_highest_hierarchy_artery()
+                    if artery != highest_hierarchy_artery:
+                        continue
+                if idx == 0:
+                    tan = points[1].coords - points[0].coords
+                elif idx == len(points) - 1:
+                    tan = points[-1].coords - points[-2].coords
+                else:
+                    tan = points[idx + 1].coords - points[idx - 1].coords
+                
+                point.update_tangent(tan)
+
+    def compute_all_splines(self):
+        return
+              
     def transform(self, skeleton: Skeleton):
 
         model_anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
@@ -543,6 +545,35 @@ class SkeletonModel:
         affine_matrix = tform.params
 
         return similarity_matrix, affine_matrix
+
+    def plot(self):
+        plotter = pv.Plotter()
+        for poly in self.all_splines().values():
+            plotter.add_mesh(poly, line_width=6, render_lines_as_tubes=True)
+
+        point_cloud = np.vstack([point for point in self._points.values()])
+
+        plotter.add_mesh(point_cloud, render_points_as_spheres=True, color='red', point_size=10)
+        plotter.add_mesh(self.anchor_points, render_points_as_spheres=True, color='purple', point_size=10)
+        plotter.camera_position = 'xy'
+        plotter.show()
+
+    def plot_transform(self, skeleton):
+        similarity_matrix, affine_matrix = self.transform(skeleton)
+        homogenous_points = np.hstack([self.points_list, np.ones((self.points_list.shape[0], 1))])
+        transformed_homogenous = (similarity_matrix @ homogenous_points.T).T
+
+        transformed_points = transformed_homogenous[:, :3]
+
+        plotter = pv.Plotter()
+        points = pv.PolyData(transformed_points)
+        plotter.add_mesh(points, color='red', render_points_as_spheres=True, point_size=10)
+        plotter.add_mesh(skeleton.points, color='black', render_points_as_spheres=True, point_size=6)
+
+        plotter.show()
+    
+    def apply_transform(self):
+        return
 
     def move_knot(self, artery: str, index: int, new_xyz: Tuple[float, float, float]) -> Set[str]:
         """Move one explicit control point and recompute affected splines.
@@ -591,6 +622,43 @@ class SkeletonModel:
 
     # ---- junction indexing --------------------------------------------------
 
+    @staticmethod
+    def _spline_tangent(poly: pv.PolyData, xyz: np.ndarray) -> Optional[np.ndarray]:
+        """Approximate tangent of *poly* at (closest) point *xyz*."""
+        pts = poly.points
+        dists = np.linalg.norm(pts - xyz, axis=1)
+        idx = dists.argmin()
+        if dists[idx] > _TOL:
+            return None  # no reasonable match
+        if idx == 0:
+            tan = pts[1] - pts[0]
+        elif idx == len(pts) - 1:
+            tan = pts[-1] - pts[-2]
+        else:
+            tan = pts[idx + 1] - pts[idx - 1]
+        return tan if np.linalg.norm(tan) > 0 else None
+
+    # ---- spline (re)generation ---------------------------------------------
+
+    def _compute_spline(self, art: str) -> pv.PolyData:
+        pts = self._points[art]
+        start_tan = self._matching_tangent(art, pts[0])
+        end_tan = self._matching_tangent(art, pts[-1])
+        return catmull_rom_spline_polydata(
+            pts.copy(),
+            samples_per_segment=self.samples_per_segment,
+            start_tangent=start_tan,
+            end_tangent=end_tan,
+        )
+
+    def _recompute_all(self) -> None:
+        for art in self._points:
+            self._splines[art] = self._compute_spline(art)
+        # one additional pass so children capture fresh parent tangents
+        for art in self._points:
+            self._splines[art] = self._compute_spline(art)
+
+    #all functions under are useless after adding point class
     def _rebuild_junction_index(self) -> None:
         """Index *all* control‑point coordinates shared across arteries."""
         self._junction_map.clear()
@@ -617,24 +685,6 @@ class SkeletonModel:
                 return {art for art, _ in members}
         return set()
 
-    # ---- geometry utilities -------------------------------------------------
-
-    @staticmethod
-    def _spline_tangent(poly: pv.PolyData, xyz: np.ndarray) -> Optional[np.ndarray]:
-        """Approximate tangent of *poly* at (closest) point *xyz*."""
-        pts = poly.points
-        dists = np.linalg.norm(pts - xyz, axis=1)
-        idx = dists.argmin()
-        if dists[idx] > _TOL:
-            return None  # no reasonable match
-        if idx == 0:
-            tan = pts[1] - pts[0]
-        elif idx == len(pts) - 1:
-            tan = pts[-1] - pts[-2]
-        else:
-            tan = pts[idx + 1] - pts[idx - 1]
-        return tan if np.linalg.norm(tan) > 0 else None
-
     def _matching_tangent(self, child: str, xyz: np.ndarray) -> Optional[np.ndarray]:
         """Search arteries sharing *xyz* (excluding *child*) and return spline tangent."""
         for members in self._junction_map.values():
@@ -652,76 +702,19 @@ class SkeletonModel:
                     return tan
         return None
 
-    # ---- spline (re)generation ---------------------------------------------
+    # ---- geometry utilities -------------------------------------------------
 
-    def _compute_spline(self, art: str) -> pv.PolyData:
-        pts = self._points[art]
-        start_tan = self._matching_tangent(art, pts[0])
-        end_tan = self._matching_tangent(art, pts[-1])
-        return catmull_rom_spline_polydata(
-            pts.copy(),
-            samples_per_segment=self.samples_per_segment,
-            start_tangent=start_tan,
-            end_tangent=end_tan,
-        )
-
-    def _recompute_all(self) -> None:
-        for art in self._points:
-            self._splines[art] = self._compute_spline(art)
-        # one additional pass so children capture fresh parent tangents
-        for art in self._points:
-            self._splines[art] = self._compute_spline(art)
-
-    def plot(self):
-        plotter = pv.Plotter()
-        for poly in self.all_splines().values():
-            plotter.add_mesh(poly, line_width=6, render_lines_as_tubes=True)
-
-        point_cloud = np.vstack([point for point in self._points.values()])
-
-        anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
-                                  (1, 3.5, 0.5), (4, -2, 3.5), (4, 2, 3.5), 
-                                  (3.5, 4, 3.5), (3.5, -4, 3.5), (-4, 3.5, 0), 
-                                  (-4, -3.5, 0)])
-        
-
-        plotter.add_mesh(point_cloud, render_points_as_spheres=True, color='red', point_size=10)
-        plotter.add_mesh(anchor_points[3], render_points_as_spheres=True, color='black', point_size=12)
-        plotter.add_mesh(anchor_points, render_points_as_spheres=True, color='purple', point_size=10)
-        plotter.camera_position = 'xy'
-        plotter.show()
-
-    def plot_transform(self, skeleton):
-        similarity_matrix, affine_matrix = self.transform(skeleton)
-        homogenous_points = np.hstack([self.points_list, np.ones((self.points_list.shape[0], 1))])
-        transformed_homogenous = (similarity_matrix @ homogenous_points.T)
-        transformed_homogenous = (affine_matrix @ transformed_homogenous).T
-
-        transformed_points = transformed_homogenous[:, :3]
-
-        plotter = pv.Plotter()
-        points = pv.PolyData(transformed_points)
-        plotter.add_mesh(points, color='red', render_points_as_spheres=True, point_size=10)
-        plotter.add_mesh(skeleton.points, color='black', render_points_as_spheres=True, point_size=6)
-
-        plotter.show()
-    
 class Point:
     def __init__(self, coords: np.array, arteries: list):
         self.coords = coords
         self.arteries = arteries
-        self.anchor_point = self.is_anchor_point()
+        self.anchor_point = False
 
-    def is_anchor_point(self):
-        anchor_points = [(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
-                        (1, 3.5, 0.5), (4, -2, 3.5), (4, 2, 3.5), 
-                        (3.5, 4, 3.5), (3.5, -4, 3.5), (-4, 3.5, 0), 
-                        (-4, -3.5, 0)
-                        ]
+    def is_anchor_point(self, anchor_points):
         if self.coords in anchor_points:
-            return True
+            self.anchor_point = True
         else:
-            return False
+            self.anchor_point = False
     
     def find_artery_type(self):
         if len(self.arteries) > 1:
@@ -739,11 +732,30 @@ class Point:
         else:
             self.artery_type = "communicating_artery"
 
+    def find_highest_hierarchy_artery(self):
+        inlet_arteries = ["BA", "RICA", "LICA"]
+        outlet_arteries = ["RPCA", "LPCA", "RMCA", "LMCA", "RACA", "LACA"]
+        communicating_arteries = ["RPCOM", "LPCOM", "ACOM"]
+        highest_hierarchy_artery = "com"
+
+        for artery in self.arteries:
+            if artery in inlet_arteries:
+                return artery
+            elif artery in outlet_arteries:
+                highest_hierarchy_artery = artery
+            elif artery in communicating_arteries and highest_hierarchy_artery not in outlet_arteries:
+                highest_hierarchy_artery = artery
+        
+        return highest_hierarchy_artery
+
     def update_point(self, new_point):
         self.coords = new_point
 
     def update_tangent(self, tangent):
         self.tangent = tangent
+
+    def is_start_or_end_point(self):
+        return
 
 def _normalize(vec: np.ndarray) -> np.ndarray:
     """Return *vec* normalised (safe if ‖vec‖ ≈ 0)."""
