@@ -460,13 +460,15 @@ class SkeletonModel:
                                   (3.5, 4, 3.5), (3.5, -4, 3.5), (-4, 3.5, 0), 
                                   (-4, -3.5, 0)])
         
+        #dictionary of points for all arteries
         self.points = self.compute_all_points()
+        #list of all points
         self.points_list = [point for sublist in self.points.values() for point in sublist]
         self.compute_all_tangents()
 
         # spline cache {artery → PolyData}
         self._splines: Dict[str, pv.PolyData] = {}
-
+        
         self.compute_all_splines()
 
     # ------------------------------------------------------------------

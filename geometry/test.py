@@ -13,7 +13,12 @@ template = SkeletonModel()
 
 
 similarity, affine = template.find_transform(skeleton)
-polynomial_transform = template.find_non_linear_transform(skeleton)
 
-#template.plot(skeleton, plot_skeleton=True)
-#template.apply_transform(affine)
+template.apply_transform(similarity)
+template.plot(skeleton, plot_skeleton=True)
+
+'''ideas for wednesday:
+1. non-linear transform
+2. anchor points is a list of point objects instead of tuples
+3. make anchor points change based on what vessels a given patient has
+'''
