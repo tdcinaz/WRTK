@@ -9,6 +9,8 @@ from skimage.morphology import skeletonize
 from scipy.spatial import cKDTree
 from scipy.spatial.distance import cdist
 from skimage import transform
+from skimage.transform import PolynomialTransform, warp
+import SimpleITK as sitk
 
 __all__ = [
     "SkeletonModel",
@@ -392,9 +394,9 @@ class Skeleton(pv.PolyData):
         max_LACA = LACA_points[np.argmax(LACA_points[:, 2])]
         max_RACA = RACA_points[np.argmax(RACA_points[:, 2])]
 
-        self.anchor_points.append(max_RACA)
+        '''self.anchor_points.append(max_RACA)
         self.anchor_points.append(max_LACA)
-        self.anchor_points.append(min_bas)
+        self.anchor_points.append(min_bas)'''
         #anchor points are in order of the order list followed by the top RACA point, top LACA point, and bottom basillar point
         self.anchor_points = np.array(self.anchor_points)
         
@@ -448,10 +450,15 @@ class SkeletonModel:
             "ACOM": [(4.5, -1, 4), (4.5, -0.5, 4), (4.5, 0, 4), (4.5, 0.5, 4), (4.5, 1, 4)],
         }
         
+        '''self.anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
+                                  (1, 3.5, 0.5), (4, -2, 3.5), (4, 2, 3.5), 
+                                  (3.5, 4, 3.5), (3.5, -4, 3.5), (-4, 3.5, 0), 
+                                  (-4, -3.5, 0), (7, -1, 9.5), (7, 1, 9.5), (-4.5, 0, -5)])'''
+        
         self.anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
                                   (1, 3.5, 0.5), (4, -2, 3.5), (4, 2, 3.5), 
                                   (3.5, 4, 3.5), (3.5, -4, 3.5), (-4, 3.5, 0), 
-                                  (-4, -3.5, 0), (7, -1, 9.5), (7, 1, 9.5), (-4.5, 0, -5)])
+                                  (-4, -3.5, 0)])
         
         self.points = self.compute_all_points()
         self.points_list = [point for sublist in self.points.values() for point in sublist]
@@ -531,10 +538,30 @@ class SkeletonModel:
                 
                 point.update_tangent(tan)
 
-    #necessary for moving individual nodes
-    def compute_tangent(self):
-        return
-
+    def compute_tangents(self, arteries):
+        #make a list with desired order that tangents are computed in
+        order = list(self.inlet_arteries.keys()) + list(self.outlet_arteries.keys()) + list(self.communicating_arteries.keys())
+        #reorder the dictionary
+        reordered_dict = {artery: self.points[artery] for artery in order if artery in arteries}
+        
+        for artery, points in reordered_dict.items():
+            for idx, point in enumerate(points):
+                point_type = point.artery_type
+                
+                #skip computing tangents for points with multiple arteries for the artery of lower priority
+                if point_type == "connection":
+                    highest_hierarchy_artery = point.find_highest_hierarchy_artery()
+                    if artery != highest_hierarchy_artery:
+                        continue
+                if idx == 0:
+                    tan = points[1].coords - points[0].coords
+                elif idx == len(points) - 1:
+                    tan = points[-1].coords - points[-2].coords
+                else:
+                    tan = points[idx + 1].coords - points[idx - 1].coords
+                
+                point.update_tangent(tan)
+        
     def compute_all_splines(self):
         for artery in self.points:
             self._splines[artery] = self.compute_spline(artery)
@@ -581,6 +608,14 @@ class SkeletonModel:
 
         return similarity_matrix, affine_matrix
 
+    def find_non_linear_transform(self, skeleton: Skeleton):
+
+        fixed = skeleton.anchor_points
+        moving = self.anchor_points
+
+        #transformDomainMeshSize=[2]*.GetDimension()
+        #tx = sitk.BSplineTransformInitializer()
+
     def plot(self, skeleton: Skeleton, plot_skeleton=False):
         plotter = pv.Plotter()
         for poly in self.all_splines().values():
@@ -600,7 +635,11 @@ class SkeletonModel:
         Point.transform_all_instances(transform)
         self.compute_all_splines()
 
-    #need to be rewritten to handle the point class
+        points = np.hstack((self.anchor_points, np.ones((len(self.anchor_points), 1))))
+        transformed_homogenous = (transform @ points.T).T
+        transformed = transformed_homogenous[:, :3]
+        self.anchor_points = transformed
+
     def move_knot(self, artery: str, index: int, new_xyz: Tuple[float, float, float]) -> Set[str]:
         """Move one explicit control point and recompute affected splines.
 
@@ -609,30 +648,21 @@ class SkeletonModel:
         set[str]
             Artery names that were recomputed.
         """
-        if artery not in self._points:
+        if artery not in self.points:
             raise KeyError(f"Unknown artery '{artery}'.")
-        pts = self._points[artery]
+        pts = self.points[artery]
         if not (0 <= index < len(pts)):
             raise IndexError("knot index out of range")
 
-        old_xyz = pts[index].copy()
-        pts[index] = np.asarray(new_xyz, float)
-
-        # rebuild junction graph (cheap)
-        self._rebuild_junction_index()
+        pts[index].update_point(np.asarray(new_xyz, float))
 
         # arteries influenced by either old or new position
-        affected: Set[str] = {artery}
-        affected |= self._arteries_sharing_point(old_xyz)
-        affected |= self._arteries_sharing_point(new_xyz)
+        affected = pts[index].arteries
 
-        # --- two‑pass recompute: parents first, then children ---------------
-        # pass 1: recompute every affected artery (parents change tangents)
-        for art in affected:
-            self._splines[art] = self._compute_spline(art)
-        # pass 2: redo – ensures children pick up any updated parent tangents
-        for art in affected:
-            self._splines[art] = self._compute_spline(art)
+        self.compute_tangents(affected)
+
+        for artery in affected:
+            self._splines[artery] = self.compute_spline(artery)
 
         return affected
 
