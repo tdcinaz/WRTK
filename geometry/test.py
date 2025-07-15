@@ -11,4 +11,9 @@ pv_image = Image(input)
 skeleton = pv_image.create_skeleton()
 template = SkeletonModel()
 
-template.plot_transform(skeleton)
+similarity, affine = template.find_transform(skeleton)
+
+template.apply_transform(similarity)
+template.apply_transform(affine)
+
+template.plot()

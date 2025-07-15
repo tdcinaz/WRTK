@@ -443,35 +443,23 @@ class SkeletonModel:
                                   (-4, -3.5, 0)])
         
         self.points = self.compute_all_points()
-        self.points_list = list(self.points.values())
+        self.points_list = [point for sublist in self.points.values() for point in sublist]
         self.compute_all_tangents()
-
-        # store control points as float arrays
-        self._points: Dict[str, np.ndarray] = {
-            **{n: np.asarray(p, float) for n, p in self.inlet_arteries.items()},
-            **{n: np.asarray(p, float) for n, p in self.outlet_arteries.items()},
-            **{n: np.asarray(p, float) for n, p in self.communicating_arteries.items()},
-        }
-        
-        self.points_list = np.vstack(list(self._points.values()))
 
         # spline cache {artery → PolyData}
         self._splines: Dict[str, pv.PolyData] = {}
 
-        # mapping junction‑node‑id → List[(artery, knot‑index)]
-        self._junction_map: Dict[int, List[Tuple[str, int]]] = {}
-
-        self._rebuild_junction_index()
-        self._recompute_all()
+        self.compute_all_splines()
 
     # ------------------------------------------------------------------
     #   Public API
     # ------------------------------------------------------------------
     def compute_all_points(self):
-        
+        #dict with all arteries
         all_arteries = {**self.outlet_arteries, **self.inlet_arteries, **self.communicating_arteries}
         all_points = {}
 
+        #make new dict with point as key and the arteries it connects to as values
         for artery, point_list in all_arteries.items():
             for point in point_list:
                 if point not in list(all_points.keys()):
@@ -483,17 +471,24 @@ class SkeletonModel:
         
         points = []
 
+        #create point instances
         for point, labels in all_points.items():
             points.append(Point(np.array(point), labels))
         
+        #find what type of point it is (connection, inlet, outlet, or communicating artery)
+        #find whether it's an anchor point
         for point in points:
             point.find_artery_type()
             point.is_anchor_point(self.anchor_points)
 
+        #fill all arteries with instances of the point class instead of just coordinates 
         for artery, point_list in all_arteries.items():
             new_point_list = []
+            #target point is old coordinate tuple
             for target_point in point_list:
+                #new point is the new point object
                 for new_point in points:
+                    #replace target point with a point object
                     if (target_point == new_point.coords).all():
                         new_point_list.append(new_point)
                         all_arteries[artery] = new_point_list
@@ -502,12 +497,16 @@ class SkeletonModel:
         return all_arteries
 
     def compute_all_tangents(self):
+        #make a list with desired order that tangents are computed in
         order = list(self.inlet_arteries.keys()) + list(self.outlet_arteries.keys()) + list(self.communicating_arteries.keys())
+        #reorder the dictionary
         reordered_dict = {artery: self.points[artery] for artery in order}
 
         for artery, points in reordered_dict.items():
             for idx, point in enumerate(points):
                 point_type = point.artery_type
+                
+                #skip computing tangents for points with multiple arteries for the artery of lower priority
                 if point_type == "connection":
                     highest_hierarchy_artery = point.find_highest_hierarchy_artery()
                     if artery != highest_hierarchy_artery:
@@ -521,26 +520,51 @@ class SkeletonModel:
                 
                 point.update_tangent(tan)
 
-    def compute_all_splines(self):
+    #necessary for moving individual nodes
+    def compute_tangent(self):
         return
-              
-    def transform(self, skeleton: Skeleton):
 
-        model_anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
-                                  (1, 3.5, 0.5), (4, -2, 3.5), (4, 2, 3.5), 
-                                  (4.5, 6, 4), (4.5, -6, 4), (-4, 3.5, 0), 
-                                  (-4, -3.5, 0)])
-        
+    def compute_all_splines(self):
+        for artery in self.points:
+            self._splines[artery] = self.compute_spline(artery)
+        # one additional pass so children capture fresh parent tangents
+        for artery in self.points:
+            self._splines[artery] = self.compute_spline(artery)
+              
+    def compute_spline(self, artery): 
+        pts = self.points[artery]  
+        pt_coords = np.array([point.coords for point in self.points[artery]])
+        start_tan = pts[0].tangent
+        end_tan = pts[-1].tangent
+
+        communicating_arteries = ["RPCOM", "LPCOM", "ACOM"]
+        #end tangent needs to face in opposite direction for hermite splines
+        if artery in communicating_arteries:
+            end_tan = end_tan * -1
+
+        return catmull_rom_spline_polydata(
+            pt_coords.copy(),
+            samples_per_segment=self.samples_per_segment,
+            start_tangent=start_tan,
+            end_tangent=end_tan,
+        )
+
+    def find_transform(self, skeleton: Skeleton):
+
+        #find skeleton anchor points
         skeleton_anchor_points = skeleton.anchor_points
 
-        tform = transform.estimate_transform('similarity', model_anchor_points, skeleton_anchor_points)
+        #find the similarity transform matrix
+        tform = transform.estimate_transform('similarity', self.anchor_points, skeleton_anchor_points)
         
         similarity_matrix = tform.params
         
-        homogenous_points = np.hstack([model_anchor_points, np.ones((model_anchor_points.shape[0], 1))])
+        #compute the transformed anchor points
+        homogenous_points = np.hstack([self.anchor_points, np.ones((self.anchor_points.shape[0], 1))])
         transformed_homogenous = (similarity_matrix @ homogenous_points.T).T
         transformed_points = transformed_homogenous[:, :3]
 
+        #find the affine transform matrix from the transformed anchor points
         tform = transform.estimate_transform('affine', transformed_points, skeleton_anchor_points)
         affine_matrix = tform.params
 
@@ -550,30 +574,16 @@ class SkeletonModel:
         plotter = pv.Plotter()
         for poly in self.all_splines().values():
             plotter.add_mesh(poly, line_width=6, render_lines_as_tubes=True)
-
-        point_cloud = np.vstack([point for point in self._points.values()])
+        
+        point_cloud = np.vstack([point.coords for point in self.points_list])
 
         plotter.add_mesh(point_cloud, render_points_as_spheres=True, color='red', point_size=10)
-        plotter.add_mesh(self.anchor_points, render_points_as_spheres=True, color='purple', point_size=10)
         plotter.camera_position = 'xy'
         plotter.show()
 
-    def plot_transform(self, skeleton):
-        similarity_matrix, affine_matrix = self.transform(skeleton)
-        homogenous_points = np.hstack([self.points_list, np.ones((self.points_list.shape[0], 1))])
-        transformed_homogenous = (similarity_matrix @ homogenous_points.T).T
-
-        transformed_points = transformed_homogenous[:, :3]
-
-        plotter = pv.Plotter()
-        points = pv.PolyData(transformed_points)
-        plotter.add_mesh(points, color='red', render_points_as_spheres=True, point_size=10)
-        plotter.add_mesh(skeleton.points, color='black', render_points_as_spheres=True, point_size=6)
-
-        plotter.show()
-    
-    def apply_transform(self):
-        return
+    def apply_transform(self, transform):
+        Point.transform_all_instances(transform)
+        self.compute_all_splines()
 
     def move_knot(self, artery: str, index: int, new_xyz: Tuple[float, float, float]) -> Set[str]:
         """Move one explicit control point and recompute affected splines.
@@ -616,99 +626,25 @@ class SkeletonModel:
     def all_splines(self) -> Dict[str, pv.PolyData]:
         return self._splines
 
-    # ------------------------------------------------------------------
-    #   Internal helpers
-    # ------------------------------------------------------------------
-
-    # ---- junction indexing --------------------------------------------------
-
-    @staticmethod
-    def _spline_tangent(poly: pv.PolyData, xyz: np.ndarray) -> Optional[np.ndarray]:
-        """Approximate tangent of *poly* at (closest) point *xyz*."""
-        pts = poly.points
-        dists = np.linalg.norm(pts - xyz, axis=1)
-        idx = dists.argmin()
-        if dists[idx] > _TOL:
-            return None  # no reasonable match
-        if idx == 0:
-            tan = pts[1] - pts[0]
-        elif idx == len(pts) - 1:
-            tan = pts[-1] - pts[-2]
-        else:
-            tan = pts[idx + 1] - pts[idx - 1]
-        return tan if np.linalg.norm(tan) > 0 else None
-
-    # ---- spline (re)generation ---------------------------------------------
-
-    def _compute_spline(self, art: str) -> pv.PolyData:
-        pts = self._points[art]
-        start_tan = self._matching_tangent(art, pts[0])
-        end_tan = self._matching_tangent(art, pts[-1])
-        return catmull_rom_spline_polydata(
-            pts.copy(),
-            samples_per_segment=self.samples_per_segment,
-            start_tangent=start_tan,
-            end_tangent=end_tan,
-        )
-
-    def _recompute_all(self) -> None:
-        for art in self._points:
-            self._splines[art] = self._compute_spline(art)
-        # one additional pass so children capture fresh parent tangents
-        for art in self._points:
-            self._splines[art] = self._compute_spline(art)
-
-    #all functions under are useless after adding point class
-    def _rebuild_junction_index(self) -> None:
-        """Index *all* control‑point coordinates shared across arteries."""
-        self._junction_map.clear()
-        representatives: List[np.ndarray] = []  # 1 coord per distinct node
-
-        def _find_node_id(xyz: np.ndarray) -> int:
-            for nid, rep in enumerate(representatives):
-                if np.linalg.norm(rep - xyz) < self.tol:
-                    return nid
-            return -1
-
-        for art, pts in self._points.items():
-            for idx, p in enumerate(pts):
-                nid = _find_node_id(p)
-                if nid == -1:
-                    nid = len(representatives)
-                    representatives.append(p.copy())
-                self._junction_map.setdefault(nid, []).append((art, idx))
-
-    def _arteries_sharing_point(self, xyz: np.ndarray) -> Set[str]:
-        for members in self._junction_map.values():
-            rep = self._points[members[0][0]][members[0][1]]
-            if np.linalg.norm(rep - xyz) < self.tol:
-                return {art for art, _ in members}
-        return set()
-
-    def _matching_tangent(self, child: str, xyz: np.ndarray) -> Optional[np.ndarray]:
-        """Search arteries sharing *xyz* (excluding *child*) and return spline tangent."""
-        for members in self._junction_map.values():
-            rep_xyz = self._points[members[0][0]][members[0][1]]
-            if np.linalg.norm(rep_xyz - xyz) >= self.tol:
-                continue
-            for art, _ in members:
-                if art == child:
-                    continue
-                parent_spline = self._splines.get(art)
-                if parent_spline is None:
-                    continue  # parent not computed yet
-                tan = self._spline_tangent(parent_spline, xyz)
-                if tan is not None:
-                    return tan
-        return None
-
-    # ---- geometry utilities -------------------------------------------------
 
 class Point:
+    all_points = []
+
+    @classmethod 
+    def transform_all_instances(cls, transform_matrix):
+        for instance in Point.all_points:
+            homogenous_pt = np.append(instance.coords, 1)
+            transformed_homogenous = (transform_matrix @ homogenous_pt.T).T
+            new_point = transformed_homogenous[:3]
+            new_vec = transform_matrix[:3, :3] @ instance.tangent
+            instance.update_point(new_point)
+            instance.update_tangent(new_vec)
+    
     def __init__(self, coords: np.array, arteries: list):
         self.coords = coords
         self.arteries = arteries
         self.anchor_point = False
+        Point.all_points.append(self)
 
     def is_anchor_point(self, anchor_points):
         if self.coords in anchor_points:
@@ -719,6 +655,7 @@ class Point:
     def find_artery_type(self):
         if len(self.arteries) > 1:
             self.artery_type = "connection"
+            return
         
         artery = self.arteries[0]
         
