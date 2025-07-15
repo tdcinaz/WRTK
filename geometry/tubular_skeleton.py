@@ -385,6 +385,17 @@ class Skeleton(pv.PolyData):
             else:
                 continue
         
+        Bas_points = self.points[np.where(self.point_data['Artery'] == 1)]
+        LACA_points = self.points[np.where(self.point_data['Artery'] == 11)]
+        RACA_points = self.points[np.where(self.point_data['Artery'] == 12)]
+        min_bas = Bas_points[np.argmin(Bas_points[:, 2])]
+        max_LACA = LACA_points[np.argmax(LACA_points[:, 2])]
+        max_RACA = RACA_points[np.argmax(RACA_points[:, 2])]
+
+        self.anchor_points.append(max_RACA)
+        self.anchor_points.append(max_LACA)
+        self.anchor_points.append(min_bas)
+        #anchor points are in order of the order list followed by the top RACA point, top LACA point, and bottom basillar point
         self.anchor_points = np.array(self.anchor_points)
         
 class SkeletonModel:
@@ -440,7 +451,7 @@ class SkeletonModel:
         self.anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
                                   (1, 3.5, 0.5), (4, -2, 3.5), (4, 2, 3.5), 
                                   (3.5, 4, 3.5), (3.5, -4, 3.5), (-4, 3.5, 0), 
-                                  (-4, -3.5, 0)])
+                                  (-4, -3.5, 0), (7, -1, 9.5), (7, 1, 9.5), (-4.5, 0, -5)])
         
         self.points = self.compute_all_points()
         self.points_list = [point for sublist in self.points.values() for point in sublist]
@@ -570,13 +581,17 @@ class SkeletonModel:
 
         return similarity_matrix, affine_matrix
 
-    def plot(self):
+    def plot(self, skeleton: Skeleton, plot_skeleton=False):
         plotter = pv.Plotter()
         for poly in self.all_splines().values():
             plotter.add_mesh(poly, line_width=6, render_lines_as_tubes=True)
         
-        point_cloud = np.vstack([point.coords for point in self.points_list])
+        if plot_skeleton:
+            plotter.add_mesh(skeleton.points, render_points_as_spheres=True, color='black', point_size=8)
 
+        point_cloud = np.vstack([point.coords for point in self.points_list])
+        
+        #plotter.add_mesh(np.array((-4.5, 0, -5)), render_points_as_spheres=True, color='black', point_size=12)
         plotter.add_mesh(point_cloud, render_points_as_spheres=True, color='red', point_size=10)
         plotter.camera_position = 'xy'
         plotter.show()
@@ -585,6 +600,7 @@ class SkeletonModel:
         Point.transform_all_instances(transform)
         self.compute_all_splines()
 
+    #need to be rewritten to handle the point class
     def move_knot(self, artery: str, index: int, new_xyz: Tuple[float, float, float]) -> Set[str]:
         """Move one explicit control point and recompute affected splines.
 
@@ -625,7 +641,6 @@ class SkeletonModel:
 
     def all_splines(self) -> Dict[str, pv.PolyData]:
         return self._splines
-
 
 class Point:
     all_points = []
