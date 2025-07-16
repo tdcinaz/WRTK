@@ -9,13 +9,15 @@ pv_image = Image(input)
 
 
 skeleton = pv_image.create_skeleton()
-template = SkeletonModel()
+skeleton.plot()
+#template = SkeletonModel()
+
+#similarity, affine = template.find_transform(skeleton)
+#template.apply_transform(similarity)
+#template.apply_transform(affine)
 
 
-similarity, affine = template.find_transform(skeleton)
-
-template.apply_transform(similarity)
-template.plot(skeleton, plot_skeleton=True)
+#template.plot(skeleton, plot_skeleton=True)
 
 '''ideas for wednesday:
 1. non-linear transform

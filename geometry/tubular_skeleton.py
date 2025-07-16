@@ -11,6 +11,7 @@ from scipy.spatial.distance import cdist
 from skimage import transform
 from skimage.transform import PolynomialTransform, warp
 import SimpleITK as sitk
+from scipy.optimize import minimize
 
 __all__ = [
     "SkeletonModel",
@@ -98,7 +99,7 @@ class Skeleton(pv.PolyData):
         self.point_data['Radius'] = self.radii_mm.flatten()
         self.point_data["Artery"] = self.labels.flatten()
         self._extract_connections()
-        self.find_anchor_points()
+        self._find_branch_points()
         
     def _compute_points(self):
         points = []
@@ -137,7 +138,12 @@ class Skeleton(pv.PolyData):
     def plot(self):
         p = pv.Plotter()
         p.add_mesh(self.points, render_points_as_spheres=True, point_size=6)
-        p.add_mesh(np.array(self.anchor_points), render_points_as_spheres=True, point_size=10, color='black')
+        print(self.anchor_points)
+        p.add_mesh(self.anchor_points, render_points_as_spheres=True, point_size=6)
+        
+        for anchor_point, radius in zip(self.anchor_points, self.anchor_points_radius):
+            sphere = pv.Sphere(center=anchor_point, radius=radius)
+            p.add_mesh(sphere, color='black')
 
         try:
             skeleton_connection_labels = np.nonzero(self.point_data['ConnectionLabel'])
@@ -349,7 +355,6 @@ class Skeleton(pv.PolyData):
         points = self.points[idxs]
         labels = self.point_data["Artery"][idxs]
         distance_matrix = cdist(points, points)
-        self.anchor_points = []
 
         order = ["R-PCA/Basillar", "L-PCA/Basillar", "R-Pcom/R-ICA", "L-Pcom/L-ICA", 
                  "R-ACA/R-ICA", "L-ACA/L-ICA", "L-MCA/L-ICA", "R-MCA/R-ICA", 
@@ -380,6 +385,7 @@ class Skeleton(pv.PolyData):
             nearest_point_label = labels[nearest]
             current_point_label = labels[idx]
             connection = f"{vessel_labels[nearest_point_label]}/{vessel_labels[current_point_label]}"
+
             if connection in order:
                 insertion_index = order.index(connection)
                 new_point = (nearest_point + current_point) / 2
@@ -468,7 +474,7 @@ class SkeletonModel:
 
         # spline cache {artery → PolyData}
         self._splines: Dict[str, pv.PolyData] = {}
-        
+
         self.compute_all_splines()
 
     # ------------------------------------------------------------------
@@ -610,13 +616,73 @@ class SkeletonModel:
 
         return similarity_matrix, affine_matrix
 
-    def find_non_linear_transform(self, skeleton: Skeleton):
-
+    def create_point_based_bspline_transform(self,
+                                       skeleton: Skeleton,
+                                       image_size=[256, 256, 128], 
+                                       grid_size=[6, 6, 3]):
+        """
+        Create and optimize a BSpline transform to map source points to target points
+        """
+        # Create initial BSpline transform
+        bspline_transform = sitk.BSplineTransformInitializer(
+            image1=sitk.Image(image_size, sitk.sitkFloat32),
+            transformDomainMeshSize=grid_size
+        )
+        
+        source = self.anchor_points
         fixed = skeleton.anchor_points
-        moving = self.anchor_points
 
-        #transformDomainMeshSize=[2]*.GetDimension()
-        #tx = sitk.BSplineTransformInitializer()
+        def objective_function(params):
+            # Set transform parameters
+            transform_copy = sitk.BSplineTransform(bspline_transform)
+            transform_copy.SetParameters(params)
+            
+            # Calculate sum of squared distances
+            total_error = 0
+            for src, tgt in zip(source, fixed):
+                src_point = [float(src[0]), float(src[1]), float(src[2])]
+                try:
+                    transformed = transform_copy.TransformPoint(src_point)
+                    error = sum((transformed[i] - tgt[i])**2 for i in range(3))
+                    total_error += error
+                except:
+                    return 1e10  # Large penalty for invalid transforms
+            
+            return total_error
+        
+        # Get initial parameters (start with identity transform)
+        initial_params = np.array(bspline_transform.GetParameters())
+        
+        # Add small regularization to prevent overfitting
+        def regularized_objective(params):
+            fitting_error = objective_function(params)
+            regularization = 0.1 * np.sum(params**2)
+            return fitting_error + regularization
+        
+        # Optimize
+        print("Optimizing BSpline transform...")
+        result = minimize(regularized_objective, initial_params, 
+                        method='L-BFGS-B', 
+                        options={'maxiter': 1000})
+        
+        # Set optimized parameters
+        bspline_transform.SetParameters(result.x)
+        
+        print(f"Optimization completed. Final error: {result.fun}")
+        
+        return bspline_transform
+
+    def apply_non_linear_transform(self, transform):
+        
+        transformed_points = []
+        for point in self.points_list:
+            coords = point.coords
+            sitk_point = [float(coords[0]), float(coords[1]), float(coords[2])]
+            transformed_point = np.array(transform.TransformPoint(sitk_point))
+            point.update_point(transformed_point)
+        
+        self.compute_all_tangents()
+        self.compute_all_splines()
 
     def plot(self, skeleton: Skeleton, plot_skeleton=False):
         plotter = pv.Plotter()
