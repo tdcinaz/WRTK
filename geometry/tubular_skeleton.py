@@ -9,9 +9,9 @@ from skimage.morphology import skeletonize
 from scipy.spatial import cKDTree
 from scipy.spatial.distance import cdist
 from skimage import transform
-from skimage.transform import PolynomialTransform, warp
 import SimpleITK as sitk
 from scipy.optimize import minimize
+import networkx as nx
 
 __all__ = [
     "SkeletonModel",
@@ -99,7 +99,7 @@ class Skeleton(pv.PolyData):
         self.point_data['Radius'] = self.radii_mm.flatten()
         self.point_data["Artery"] = self.labels.flatten()
         self._extract_connections()
-        self._find_branch_points()
+        self.find_anchor_points()
         
     def _compute_points(self):
         points = []
@@ -348,6 +348,34 @@ class Skeleton(pv.PolyData):
             skeleton_labels[idx] = 1
         self.point_data['ConnectionLabel'] = skeleton_labels
 
+    def create_network(self, connection_radius=1.0):
+        graph = nx.Graph()
+        tree = cKDTree(self.points)
+
+        for i, point in enumerate(self.points):
+            graph.add_node(i, pos=point)
+        
+        for i, point in enumerate(self.points):
+            neighbors = tree.query_ball_point(point, connection_radius)
+            for neighbor in neighbors:
+                if neighbor != i:
+                    graph.add_edge(i, neighbor)
+
+        self.graph = graph
+
+    def find_bifurcations(self, connection_radius=1.0):
+        graph = self.graph
+        
+        bifurcation_indices = []
+        for node in graph.nodes():
+            degree = graph.degree(node)
+            if degree >= 3:  # Bifurcation point
+                bifurcation_indices.append(node)
+        
+        bifurcation_points = self.points[bifurcation_indices]
+        bifurcation_indices = np.ones(self.points[1])
+        return bifurcation_points, bifurcation_indices, graph
+
     def find_anchor_points(self):
         connections = self.point_data['ConnectionLabel']
         idxs = np.where(connections > 0)
@@ -400,9 +428,9 @@ class Skeleton(pv.PolyData):
         max_LACA = LACA_points[np.argmax(LACA_points[:, 2])]
         max_RACA = RACA_points[np.argmax(RACA_points[:, 2])]
 
-        '''self.anchor_points.append(max_RACA)
+        self.anchor_points.append(max_RACA)
         self.anchor_points.append(max_LACA)
-        self.anchor_points.append(min_bas)'''
+        self.anchor_points.append(min_bas)
         #anchor points are in order of the order list followed by the top RACA point, top LACA point, and bottom basillar point
         self.anchor_points = np.array(self.anchor_points)
         
@@ -456,21 +484,30 @@ class SkeletonModel:
             "ACOM": [(4.5, -1, 4), (4.5, -0.5, 4), (4.5, 0, 4), (4.5, 0.5, 4), (4.5, 1, 4)],
         }
         
-        '''self.anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
-                                  (1, 3.5, 0.5), (4, -2, 3.5), (4, 2, 3.5), 
-                                  (3.5, 4, 3.5), (3.5, -4, 3.5), (-4, 3.5, 0), 
-                                  (-4, -3.5, 0), (7, -1, 9.5), (7, 1, 9.5), (-4.5, 0, -5)])'''
-        
         self.anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
                                   (1, 3.5, 0.5), (4, -2, 3.5), (4, 2, 3.5), 
                                   (3.5, 4, 3.5), (3.5, -4, 3.5), (-4, 3.5, 0), 
-                                  (-4, -3.5, 0)])
+                                  (-4, -3.5, 0), (7, -1, 9.5), (7, 1, 9.5), (-4.5, 0, -5)])
+        
+        '''self.anchor_points = np.array([[-5, -1, 0.5], [-5, 1, 0.5], [1, -3.5, 0.5], 
+                                  [1, 3.5, 0.5], [4, -2, 3.5], [4, 2, 3.5], 
+                                  [3.5, 4, 3.5], [3.5, -4, 3.5], [-4, 3.5, 0], 
+                                  [-4, -3.5, 0]])'''
         
         #dictionary of points for all arteries
         self.points = self.compute_all_points()
         #list of all points
         self.points_list = [point for sublist in self.points.values() for point in sublist]
         self.compute_all_tangents()
+        
+        anchor_points = [0 for i in range(self.anchor_points.shape[0])]
+        for point in self.points_list:
+            if point.anchor_point == True:
+                coords = np.array(point.coords)
+                idx = np.where(np.all(np.isclose(self.anchor_points, coords), axis=1))[0][0]
+                anchor_points[idx] = point
+
+        self.anchor_points = np.array(anchor_points)
 
         # spline cache {artery → PolyData}
         self._splines: Dict[str, pv.PolyData] = {}
@@ -595,18 +632,20 @@ class SkeletonModel:
             end_tangent=end_tan,
         )
 
-    def find_transform(self, skeleton: Skeleton):
+    def find_linear_transform(self, skeleton: Skeleton):
 
         #find skeleton anchor points
         skeleton_anchor_points = skeleton.anchor_points
 
+        model_anchor_points = np.array([point.coords for point in self.anchor_points])
+
         #find the similarity transform matrix
-        tform = transform.estimate_transform('similarity', self.anchor_points, skeleton_anchor_points)
+        tform = transform.estimate_transform('similarity', model_anchor_points, skeleton_anchor_points)
         
         similarity_matrix = tform.params
         
         #compute the transformed anchor points
-        homogenous_points = np.hstack([self.anchor_points, np.ones((self.anchor_points.shape[0], 1))])
+        homogenous_points = np.hstack([model_anchor_points, np.ones((model_anchor_points.shape[0], 1))])
         transformed_homogenous = (similarity_matrix @ homogenous_points.T).T
         transformed_points = transformed_homogenous[:, :3]
 
@@ -616,7 +655,7 @@ class SkeletonModel:
 
         return similarity_matrix, affine_matrix
 
-    def create_point_based_bspline_transform(self,
+    def find_non_linear_transform(self,
                                        skeleton: Skeleton,
                                        image_size=[256, 256, 128], 
                                        grid_size=[6, 6, 3]):
@@ -629,7 +668,7 @@ class SkeletonModel:
             transformDomainMeshSize=grid_size
         )
         
-        source = self.anchor_points
+        source = [point.coords for point in self.anchor_points]
         fixed = skeleton.anchor_points
 
         def objective_function(params):
@@ -699,14 +738,9 @@ class SkeletonModel:
         plotter.camera_position = 'xy'
         plotter.show()
 
-    def apply_transform(self, transform):
+    def apply_linear_transform(self, transform):
         Point.transform_all_instances(transform)
         self.compute_all_splines()
-
-        points = np.hstack((self.anchor_points, np.ones((len(self.anchor_points), 1))))
-        transformed_homogenous = (transform @ points.T).T
-        transformed = transformed_homogenous[:, :3]
-        self.anchor_points = transformed
 
     def move_knot(self, artery: str, index: int, new_xyz: Tuple[float, float, float]) -> Set[str]:
         """Move one explicit control point and recompute affected splines.
@@ -760,7 +794,8 @@ class Point:
         Point.all_points.append(self)
 
     def is_anchor_point(self, anchor_points):
-        if self.coords in anchor_points:
+        idx = np.where(np.all(np.isclose(anchor_points, self.coords), axis=1))[0]
+        if len(idx) > 0:
             self.anchor_point = True
         else:
             self.anchor_point = False
