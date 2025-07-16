@@ -100,6 +100,8 @@ class Skeleton(pv.PolyData):
         self.point_data["Artery"] = self.labels.flatten()
         self._extract_connections()
         self.find_anchor_points()
+        self.create_network()
+        self.find_bifurcations()
         
     def _compute_points(self):
         points = []
@@ -138,19 +140,18 @@ class Skeleton(pv.PolyData):
     def plot(self):
         p = pv.Plotter()
         p.add_mesh(self.points, render_points_as_spheres=True, point_size=6)
-        print(self.anchor_points)
-        p.add_mesh(self.anchor_points, render_points_as_spheres=True, point_size=6)
         
-        for anchor_point, radius in zip(self.anchor_points, self.anchor_points_radius):
-            sphere = pv.Sphere(center=anchor_point, radius=radius)
-            p.add_mesh(sphere, color='black')
-
         try:
-            skeleton_connection_labels = np.nonzero(self.point_data['ConnectionLabel'])
-            connection_points = self.points[skeleton_connection_labels]
-            p.add_mesh(connection_points, color='purple', render_points_as_spheres=True, point_size=6)
+            p.add_mesh(self.anchor_points, render_points_as_spheres=True, point_size=6)
         except:
             None
+        skeleton_connection_labels = np.nonzero(self.point_data['ConnectionLabel'])
+        connection_points = self.points[skeleton_connection_labels]
+        p.add_mesh(connection_points, color='purple', render_points_as_spheres=True, point_size=10)
+        skeleton_bifurcation_labels = np.nonzero(self.point_data['Bifurcation'])
+        bifurcation_points = self.points[skeleton_bifurcation_labels]
+        p.add_mesh(bifurcation_points, color='yellow', render_points_as_spheres=True, point_size=10)
+
         p.show()
 
         return
@@ -348,7 +349,7 @@ class Skeleton(pv.PolyData):
             skeleton_labels[idx] = 1
         self.point_data['ConnectionLabel'] = skeleton_labels
 
-    def create_network(self, connection_radius=1.0):
+    def create_network(self, connection_radius=0.6):
         graph = nx.Graph()
         tree = cKDTree(self.points)
 
@@ -363,7 +364,7 @@ class Skeleton(pv.PolyData):
 
         self.graph = graph
 
-    def find_bifurcations(self, connection_radius=1.0):
+    def find_bifurcations(self):
         graph = self.graph
         
         bifurcation_indices = []
@@ -373,8 +374,17 @@ class Skeleton(pv.PolyData):
                 bifurcation_indices.append(node)
         
         bifurcation_points = self.points[bifurcation_indices]
-        bifurcation_indices = np.ones(self.points[1])
-        return bifurcation_points, bifurcation_indices, graph
+
+        bifurcation_mask = np.all(bifurcation_points[:, None, :] == self.points[None, :, :], axis=2)
+        indices = []
+
+        for i in range(len(bifurcation_points)):
+            idx = np.where(bifurcation_mask[i])[0]
+            indices.append(idx[0] if len(idx) > 0 else None)
+
+        bifurcations = np.zeros(self.points.shape[0], dtype=int)
+        bifurcations[indices] = 1
+        self.point_data['Bifurcation'] = bifurcations
 
     def find_anchor_points(self):
         connections = self.point_data['ConnectionLabel']
