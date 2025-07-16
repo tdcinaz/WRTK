@@ -3,7 +3,7 @@ import itertools
 import numpy as np
 
 
-input = "training/labelsTr/topcow_307.nii.gz"
+input = "training/labelsTr/topcow_306.nii.gz"
 
 pv_image = Image(input)
 
@@ -28,5 +28,4 @@ skeleton.plot()
 '''
 
 '''problems:
-1. scan 302 pca connects to ica
-2. skeletonization connects things that shouldn't be connected'''
+1. connection points find'''

@@ -99,7 +99,7 @@ class Skeleton(pv.PolyData):
         self.point_data['Radius'] = self.radii_mm.flatten()
         self.point_data["Artery"] = self.labels.flatten()
         self._extract_connections()
-        self.find_anchor_points()
+        #self.find_anchor_points()
         self.create_network()
         self.find_bifurcations()
         
@@ -373,8 +373,42 @@ class Skeleton(pv.PolyData):
             if degree >= 3:  # Bifurcation point
                 bifurcation_indices.append(node)
         
-        bifurcation_points = self.points[bifurcation_indices]
+        #first pass to find bifurcations, likely includes bad geometry
+        bifurcation_points_rough = self.points[bifurcation_indices]
 
+        new_graph = nx.Graph()
+        tree = cKDTree(self.points)
+
+        for i, point in enumerate(self.points):
+            new_graph.add_node(i, pos=point, connection_point=self.point_data['ConnectionLabel'][i])
+        
+        connection_radius = 2.5
+        for i, point in enumerate(self.points):
+            neighbors = tree.query_ball_point(point, connection_radius)
+            for neighbor in neighbors:
+                if neighbor != i:
+                    new_graph.add_edge(i, neighbor)
+        
+
+        connection_points = np.array([new_graph.nodes[node]['connection_point'] for node in new_graph.nodes])
+
+        bifurcation_points_clean = []
+
+        #check within certain radius to make sure bifurcation points only happen near connections
+        for bifurcation_point in bifurcation_points_rough:
+            for node in new_graph.nodes():
+                if (new_graph.nodes[node]['pos'] == bifurcation_point).all():
+                    neighbors = np.array([neighbor for neighbor in new_graph.neighbors(node)])
+                    neighbor_connections = connection_points[neighbors]
+                    connection_nearby = (neighbor_connections > 0).any()
+                    if connection_nearby:
+                        bifurcation_points_clean.append(bifurcation_point)
+
+        bifurcation_points = np.array(bifurcation_points_clean)
+
+        
+        #average out "triple points"
+        
         bifurcation_mask = np.all(bifurcation_points[:, None, :] == self.points[None, :, :], axis=2)
         indices = []
 
@@ -387,6 +421,8 @@ class Skeleton(pv.PolyData):
         self.point_data['Bifurcation'] = bifurcations
 
     def find_anchor_points(self):
+
+        #only works for "typical COWs"
         connections = self.point_data['ConnectionLabel']
         idxs = np.where(connections > 0)
         
@@ -445,6 +481,7 @@ class Skeleton(pv.PolyData):
         self.anchor_points = np.array(self.anchor_points)
         
 class SkeletonModel:
+
     """Mutable Circle‑of‑Willis template skeleton.
 
     *Knots* (explicit artery control points) can be moved interactively; all
