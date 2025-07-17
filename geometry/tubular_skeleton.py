@@ -89,10 +89,15 @@ class Image:
         #background vs vessels (0 vs 1)
         binary_array = (self.data_array > 0).astype(int)
 
-        #3x3 cross structure, relatively gentle 
-        structure = generate_binary_structure(3, 1)
-        #perform opening operation
-        new_binary_array = binary_opening(binary_array, structure=structure, iterations=1)
+        #2d cross structure, relatively gentle 
+        structure_2d = np.array([[0, 1, 0],
+                                [1, 1, 1],
+                                [0, 1, 0]])
+        
+        #perform opening operation on each slice of the array
+        new_binary_array = binary_array.copy()
+        for i in range(new_binary_array.shape[0]):
+            new_binary_array[i] = binary_opening(binary_array[i], structure=structure_2d, iterations=1)
 
         small_vessel_voxels = np.zeros(original_array.shape)
         small_vessel_voxels[small_vessel_idxs] = original_array[small_vessel_idxs]
@@ -127,7 +132,7 @@ class Skeleton(pv.PolyData):
         self.point_data['Radius'] = self.radii_mm.flatten()
         self.point_data["Artery"] = self.labels.flatten()
         self._extract_connections()
-        #self.find_anchor_points()
+        self.find_anchor_points()
         self.create_network()
         self.find_bifurcations()
         
@@ -252,6 +257,7 @@ class Skeleton(pv.PolyData):
         new_skeleton.point_data['Artery'] = filtered_artery
         #might be kind of expensive to just remove two points
         new_skeleton._extract_connections()
+        new_skeleton.find_anchor_points()
         new_skeleton.find_bifurcations()
         
         return new_skeleton
@@ -321,6 +327,7 @@ class Skeleton(pv.PolyData):
         new_skeleton.point_data['Radius'] = filtered_radius
         new_skeleton.point_data['Artery'] = filtered_artery
         new_skeleton._extract_connections()
+        new_skeleton.find_anchor_points()
         new_skeleton.find_bifurcations()
         
         return new_skeleton
@@ -422,14 +429,26 @@ class Skeleton(pv.PolyData):
                     if connection_nearby:
                         bifurcation_points_clean.append(bifurcation_point)
 
-        bifurcation_points = np.array(bifurcation_points_clean)
+        bifurcation_points_intermediate = np.array(bifurcation_points_clean)
         
-        #average out "triple points"
-        triple_point_graph = self.create_network(connection_radius=0.5)
-        for bifurcation_point in bifurcation_points:
-            for node in triple_point_graph.nodes():
-                if (triple_point_graph.nodes[node]['pos'] == bifurcation_point).all():
-                    neighbors = np.array([triple_point_graph.nodes[neighbor] for neighbor in triple_point_graph.neighbors(node)])
+        #average out points that are close together
+        multiple_point_graph = self.create_network(connection_radius=1)
+        
+        for bifurcation_point in bifurcation_points_intermediate:
+            for node in multiple_point_graph.nodes():
+                if (multiple_point_graph.nodes[node]['pos'] == bifurcation_point).all():
+                    neighbors = np.array([multiple_point_graph.nodes[neighbor]['pos'] for neighbor in multiple_point_graph.neighbors(node)])
+                    points = []
+                    for neighbor in neighbors:
+                        matches = np.where(np.all(bifurcation_points_intermediate == neighbor, axis=1))[0]
+                        if len(matches) > 0:
+                            points.append(bifurcation_points_intermediate[matches[0]])
+                    if len(points) > 0:
+                        points.append(bifurcation_point)
+                        average_point = np.mean(points, axis=0)
+                        print(average_point)
+                        
+                    
                     #check for bifurcation points in neighbors
 
                 continue
@@ -441,10 +460,10 @@ class Skeleton(pv.PolyData):
         4. PCOMs: 2
         5. ICAs:'''
 
-        bifurcation_mask = np.all(bifurcation_points[:, None, :] == self.points[None, :, :], axis=2)
+        bifurcation_mask = np.all(bifurcation_points_intermediate[:, None, :] == self.points[None, :, :], axis=2)
         indices = []
 
-        for i in range(len(bifurcation_points)):
+        for i in range(len(bifurcation_points_intermediate)):
             idx = np.where(bifurcation_mask[i])[0]
             indices.append(idx[0] if len(idx) > 0 else None)
 
