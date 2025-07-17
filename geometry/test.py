@@ -3,12 +3,12 @@ import itertools
 import numpy as np
 
 
-input = "training/labelsTr/topcow_306.nii.gz"
+input = "training/labelsTr/topcow_308.nii.gz"
 
 pv_image = Image(input)
 
-
 skeleton = pv_image.create_skeleton()
+#skeleton = skeleton.filter_artery_by_radius([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], 0.315)
 skeleton.plot()
 
 #template = SkeletonModel()
@@ -23,9 +23,7 @@ skeleton.plot()
 
 
 '''ideas:
-1. more control points
-2. make anchor points change based on what vessels a given patient has
 '''
 
 '''problems:
-1. connection points find'''
+1. bad geometry'''

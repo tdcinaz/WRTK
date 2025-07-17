@@ -4,7 +4,7 @@ from scipy.interpolate import CubicHermiteSpline
 from typing import Dict, List, Tuple, Set, Optional
 from functools import cached_property
 import nibabel as nib
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import distance_transform_edt, binary_opening, generate_binary_structure, convolve
 from skimage.morphology import skeletonize
 from scipy.spatial import cKDTree
 from scipy.spatial.distance import cdist
@@ -12,6 +12,7 @@ from skimage import transform
 import SimpleITK as sitk
 from scipy.optimize import minimize
 import networkx as nx
+
 
 __all__ = [
     "SkeletonModel",
@@ -32,7 +33,8 @@ class Image:
 
         # Get the NumPy array from the NIfTI
         self.data_array = self.nifti_img.get_fdata(dtype=np.float32)
-
+        self.opening_operations()
+        
         # Retrieve voxel spacing from the header
         #    If it's a 4D image, nibabel header might return 4 zooms, so we take only the first three.
         self.pix_dim = self.nifti_img.header.get_zooms()[:3]
@@ -75,6 +77,32 @@ class Image:
             volumes[label] = voxel_count * voxel_volume
 
         return volumes
+
+    def opening_operations(self):
+        
+        original_array = self.data_array
+
+        #find the indexs of the small vessels (pcoms and acom)
+        small_vessels = ((original_array == 8) | (original_array == 9) | (original_array == 10)).astype(int)
+        small_vessel_idxs = np.where(small_vessels > 0)
+
+        #background vs vessels (0 vs 1)
+        binary_array = (self.data_array > 0).astype(int)
+
+        #3x3 cross structure, relatively gentle 
+        structure = generate_binary_structure(3, 1)
+        #perform opening operation
+        new_binary_array = binary_opening(binary_array, structure=structure, iterations=1)
+
+        small_vessel_voxels = np.zeros(original_array.shape)
+        small_vessel_voxels[small_vessel_idxs] = original_array[small_vessel_idxs]
+
+        new_label_array = original_array * new_binary_array
+        #get rid of new cleaned small vessels as they probably got chopped
+        new_label_array[small_vessel_idxs] = 0
+
+        #add original small vessels back in
+        self.data_array = new_label_array + small_vessel_voxels
 
     #convenience method to create a skeleton from the image object directly
     def create_skeleton(self):
@@ -136,7 +164,7 @@ class Skeleton(pv.PolyData):
         points = (new_affine @ homogeneous_coords.T).T[:, :3]
 
         return points
-    
+
     def plot(self):
         p = pv.Plotter()
         p.add_mesh(self.points, render_points_as_spheres=True, point_size=6)
@@ -224,6 +252,7 @@ class Skeleton(pv.PolyData):
         new_skeleton.point_data['Artery'] = filtered_artery
         #might be kind of expensive to just remove two points
         new_skeleton._extract_connections()
+        new_skeleton.find_bifurcations()
         
         return new_skeleton
 
@@ -292,6 +321,7 @@ class Skeleton(pv.PolyData):
         new_skeleton.point_data['Radius'] = filtered_radius
         new_skeleton.point_data['Artery'] = filtered_artery
         new_skeleton._extract_connections()
+        new_skeleton.find_bifurcations()
         
         return new_skeleton
 
@@ -354,7 +384,7 @@ class Skeleton(pv.PolyData):
         tree = cKDTree(self.points)
 
         for i, point in enumerate(self.points):
-            graph.add_node(i, pos=point)
+            graph.add_node(i, pos=point, connection_point=self.point_data['ConnectionLabel'][i])
         
         for i, point in enumerate(self.points):
             neighbors = tree.query_ball_point(point, connection_radius)
@@ -362,10 +392,10 @@ class Skeleton(pv.PolyData):
                 if neighbor != i:
                     graph.add_edge(i, neighbor)
 
-        self.graph = graph
+        return graph
 
     def find_bifurcations(self):
-        graph = self.graph
+        graph = self.create_network()
         
         bifurcation_indices = []
         for node in graph.nodes():
@@ -376,19 +406,7 @@ class Skeleton(pv.PolyData):
         #first pass to find bifurcations, likely includes bad geometry
         bifurcation_points_rough = self.points[bifurcation_indices]
 
-        new_graph = nx.Graph()
-        tree = cKDTree(self.points)
-
-        for i, point in enumerate(self.points):
-            new_graph.add_node(i, pos=point, connection_point=self.point_data['ConnectionLabel'][i])
-        
-        connection_radius = 2.5
-        for i, point in enumerate(self.points):
-            neighbors = tree.query_ball_point(point, connection_radius)
-            for neighbor in neighbors:
-                if neighbor != i:
-                    new_graph.add_edge(i, neighbor)
-        
+        new_graph = self.create_network(connection_radius=2.5)
 
         connection_points = np.array([new_graph.nodes[node]['connection_point'] for node in new_graph.nodes])
 
@@ -405,10 +423,24 @@ class Skeleton(pv.PolyData):
                         bifurcation_points_clean.append(bifurcation_point)
 
         bifurcation_points = np.array(bifurcation_points_clean)
-
         
         #average out "triple points"
+        triple_point_graph = self.create_network(connection_radius=0.5)
+        for bifurcation_point in bifurcation_points:
+            for node in triple_point_graph.nodes():
+                if (triple_point_graph.nodes[node]['pos'] == bifurcation_point).all():
+                    neighbors = np.array([triple_point_graph.nodes[neighbor] for neighbor in triple_point_graph.neighbors(node)])
+                    #check for bifurcation points in neighbors
+
+                continue
         
+        '''maximum bifurcations by vessel:
+        1. Basillar: 1
+        2. RPCA: 2
+        3. LPCA: 2
+        4. PCOMs: 2
+        5. ICAs:'''
+
         bifurcation_mask = np.all(bifurcation_points[:, None, :] == self.points[None, :, :], axis=2)
         indices = []
 
