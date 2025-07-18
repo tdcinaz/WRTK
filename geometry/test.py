@@ -3,24 +3,26 @@ import itertools
 import numpy as np
 
 
-input = "training/labelsTr/topcow_301.nii.gz"
+input = "training/labelsTr/topcow_302.nii.gz"
 
 pv_image = Image(input)
 
 skeleton = pv_image.create_skeleton()
-skeleton = skeleton.find_bifurcations()
+#skeleton = skeleton.filter_artery_by_radius([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], 0.325)
 
-skeleton.plot()
+#skeleton.plot()
 
-#template = SkeletonModel()
+template = SkeletonModel(skeleton)
 
-#similarity, affine = template.find_linear_transform(skeleton)
-#template.apply_linear_transform(similarity)
-#template.apply_linear_transform(affine)
-#transform = template.find_non_linear_transform(skeleton)
-#template.apply_non_linear_transform(transform)
+#template.plot(plot_skeleton=True)
 
-#template.plot(skeleton, plot_skeleton=True)
+similarity, affine = template.find_linear_transform()
+template.apply_linear_transform(similarity)
+template.apply_linear_transform(affine)
+transform = template.find_non_linear_transform(skeleton)
+template.apply_non_linear_transform(transform)
+
+template.plot(plot_skeleton=True)
 
 
 '''ideas:
