@@ -133,8 +133,6 @@ class Skeleton(pv.PolyData):
         self.point_data["Artery"] = self.labels.flatten()
         self._extract_connections()
         self.find_anchor_points()
-        self.create_network()
-        self.find_bifurcations()
         
     def _compute_points(self):
         points = []
@@ -168,7 +166,12 @@ class Skeleton(pv.PolyData):
         homogeneous_coords = np.c_[zyx_coords[:, ::-1], np.ones(len(zyx_coords))]  # (x, y, z, 1)
         points = (new_affine @ homogeneous_coords.T).T[:, :3]
 
-        return points
+        _, idx  = np.unique(points, axis=0, return_index=True)
+        unique_points = points[np.sort(idx)]
+        self.radii_mm = self.radii_mm[np.sort(idx)]
+        self.labels = self.labels[np.sort(idx)]
+
+        return unique_points
 
     def plot(self):
         p = pv.Plotter()
@@ -430,7 +433,9 @@ class Skeleton(pv.PolyData):
                         bifurcation_points_clean.append(bifurcation_point)
 
         bifurcation_points_intermediate = np.array(bifurcation_points_clean)
-        
+        bifurcation_points_final = []
+        new_radii = []
+        new_labels = []
         #average out points that are close together
         multiple_point_graph = self.create_network(connection_radius=1)
         
@@ -446,30 +451,58 @@ class Skeleton(pv.PolyData):
                     if len(points) > 0:
                         points.append(bifurcation_point)
                         average_point = np.mean(points, axis=0)
-                        print(average_point)
-                        
-                    
-                    #check for bifurcation points in neighbors
-
+                        bifurcation_points_final.append(average_point)
+                        point_idxs = []
+                        for point in points:
+                            idx = np.where(np.all(point == self.points, axis=1))[0]
+                            point_idxs.append(idx)
+                        radii = self.point_data['Radius'][point_idxs]
+                        new_radii.append(np.mean(radii))
+                        label = self.point_data['Artery'][point_idxs[0]]
+                        new_labels.append(label)
+                    else:
+                        bifurcation_points_final.append(bifurcation_point)
                 continue
         
-        '''maximum bifurcations by vessel:
-        1. Basillar: 1
-        2. RPCA: 2
-        3. LPCA: 2
-        4. PCOMs: 2
-        5. ICAs:'''
+        print(np.vstack((self.points, bifurcation_points_final)).shape[0])
+        _, idx  = np.unique(np.vstack((self.points, bifurcation_points_final)), axis=0, return_index=True)
+        new_points = np.vstack((self.points, bifurcation_points_final))[np.sort(idx)]
+        final_radii = np.append(self.point_data['Radius'], new_radii)[np.sort(idx)]
+        final_labels = np.append(self.point_data['Artery'], new_labels)[np.sort(idx)]
 
-        bifurcation_mask = np.all(bifurcation_points_intermediate[:, None, :] == self.points[None, :, :], axis=2)
+        #make a new skeleton object since points are being updated
+        bifurcation_points_final = np.array(bifurcation_points_final)
+        
+        print(self.points.shape[0])
+        print(new_points.shape[0])
+
+
+        bifurcation_mask = np.all(bifurcation_points_final[:, None, :] == new_points[None, :, :], axis=2)
         indices = []
 
-        for i in range(len(bifurcation_points_intermediate)):
+        for i in range(len(bifurcation_points_final)):
             idx = np.where(bifurcation_mask[i])[0]
             indices.append(idx[0] if len(idx) > 0 else None)
 
-        bifurcations = np.zeros(self.points.shape[0], dtype=int)
+        bifurcations = np.zeros(new_points.shape[0], dtype=int)
         bifurcations[indices] = 1
-        self.point_data['Bifurcation'] = bifurcations
+        bifurcation_point_data = bifurcations
+
+        # Create a completely new Skeleton object
+        # We bypass the normal __init__ to avoid recomputing from image
+        new_skeleton = self.__class__.__new__(self.__class__)
+        
+        # Initialize the PyVista PolyData part with clean data
+        pv.PolyData.__init__(new_skeleton, new_points)
+        
+        # Set the required attributes
+        new_skeleton.image = self.image
+        new_skeleton.point_data['Radius'] = final_radii
+        new_skeleton.point_data['Artery'] = final_labels
+        new_skeleton.point_data['ConnectionLabel'] = np.append(self.point_data['ConnectionLabel'], np.zeros(new_points.shape[0] - self.points.shape[0]))
+        new_skeleton.anchor_points = self.anchor_points
+        new_skeleton.point_data['Bifurcation'] = bifurcation_point_data
+        return new_skeleton
 
     def find_anchor_points(self):
 
