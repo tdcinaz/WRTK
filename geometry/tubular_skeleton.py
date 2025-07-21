@@ -8,6 +8,7 @@ from scipy.ndimage import distance_transform_edt, binary_opening, generate_binar
 from skimage.morphology import skeletonize
 from scipy.spatial import cKDTree
 from scipy.spatial.distance import cdist
+from scipy.interpolate import interp1d
 from skimage import transform
 import SimpleITK as sitk
 from scipy.optimize import minimize
@@ -33,7 +34,7 @@ class Image:
 
         # Get the NumPy array from the NIfTI
         self.data_array = self.nifti_img.get_fdata(dtype=np.float32)
-        self.opening_operations()
+        #self.opening_operations()
         
         # Retrieve voxel spacing from the header
         #    If it's a 4D image, nibabel header might return 4 zooms, so we take only the first three.
@@ -133,7 +134,7 @@ class Skeleton(pv.PolyData):
         self.point_data["Artery"] = self.labels.flatten()
         self.point_data['ConnectionLabel'] = self.connection_labels
         self.point_data['Bifurcation'] = self.bifurcation_labels
-        self.find_anchor_points()
+        self.find_target_points()
         
     def _compute_points(self):
         points = []
@@ -263,7 +264,7 @@ class Skeleton(pv.PolyData):
         new_skeleton.point_data['Artery'] = filtered_artery
         #might be kind of expensive to just remove two points
         new_skeleton._extract_connections()
-        new_skeleton.find_anchor_points()
+        new_skeleton.find_target_points()
         new_skeleton.find_bifurcations()
         
         return new_skeleton
@@ -336,7 +337,7 @@ class Skeleton(pv.PolyData):
         new_skeleton.point_data['Artery'] = filtered_artery
         new_skeleton.point_data['ConnectionLabel'] = filtered_connection
         new_skeleton.point_data['Bifurcation'] = filtered_bifurcation
-        new_skeleton.find_anchor_points()
+        new_skeleton.find_target_points()
         
         return new_skeleton
 
@@ -354,7 +355,7 @@ class Skeleton(pv.PolyData):
             10.0: (11.0, 12.0),         # Acom -> L-ACA, R-ACA
             11.0: (4.0,),               # L-ACA -> L-ICA
             12.0: (6.0,),               # R-ACA -> R-ICA
-            13.0: (10.0, 11.0, 12.0)
+            13.0: (10.0,)
         }
 
 
@@ -499,7 +500,7 @@ class Skeleton(pv.PolyData):
         return bifurcation_point_data, new_points
 
     #flexible to different patients with different COWs but doesn't work all the time
-    def find_anchor_points(self):
+    def find_target_points(self):
 
         #only works for "typical COWs"
         connections = self.point_data['ConnectionLabel']
@@ -530,11 +531,17 @@ class Skeleton(pv.PolyData):
         order = ["R-PCA/Basillar", "L-PCA/Basillar", "R-Pcom/R-ICA", "L-Pcom/L-ICA", 
                  "R-ACA/R-ICA", "L-ACA/L-ICA", "L-MCA/L-ICA", "R-MCA/R-ICA", 
                  "L-Pcom/L-PCA", "R-Pcom/R-PCA"]
-
+        
+        bifurcation_order = ["Basillar/PCAs", "L-PCA/L-Pcom", "R-PCA/R-Pcom", 
+                            "L-ICA/L-Pcom", "R-ICA/R-Pcom", "L-MCA/L-ICA", "R-MCA/R-ICA"]
+        
         patient_specific_vessel_labels = {key:value for key, value in vessel_labels.items() if key in present_arteries}
         patient_specific_order = [connection for connection in order if all(item in patient_specific_vessel_labels.values() for item in connection.split("/"))]
+        patient_specific_bifurcation_order = [connection for connection in bifurcation_order if all(item in patient_specific_vessel_labels.values() for item in connection.split("/"))]
+        
+        bifurcation_points = [0 for _ in range(len(patient_specific_bifurcation_order))]
 
-        self.anchor_points = [0 for _ in range(int(len(idxs[0])/2))]
+        self.target_points = [0 for _ in range(len(patient_specific_order))]
 
         for idx in range(len(points)):
             nearest = np.argsort(distance_matrix[idx])[1]
@@ -547,11 +554,12 @@ class Skeleton(pv.PolyData):
             if connection in patient_specific_order:
                 insertion_index = patient_specific_order.index(connection)
                 new_point = (nearest_point + current_point) / 2
-                self.anchor_points[insertion_index] = new_point
+                self.target_points[insertion_index] = new_point
             else:
                 continue
         
-
+        for anchor_point in self.target_points:
+            continue
 
         Bas_points = self.points[np.where(self.point_data['Artery'] == 1)]
         LACA_points = self.points[np.where(self.point_data['Artery'] == 11)]
@@ -560,11 +568,11 @@ class Skeleton(pv.PolyData):
         max_LACA = LACA_points[np.argmax(LACA_points[:, 2])]
         max_RACA = RACA_points[np.argmax(RACA_points[:, 2])]
 
-        self.anchor_points.append(max_RACA)
-        self.anchor_points.append(max_LACA)
-        self.anchor_points.append(min_bas)
+        #self.target_points.append(max_RACA)
+        #self.target_points.append(max_LACA)
+        #self.target_points.append(min_bas)
         #anchor points are in order of the order list followed by the top RACA point, top LACA point, and bottom basillar point
-        self.anchor_points = np.array(self.anchor_points)
+        self.target_points = np.array(self.target_points)
     
     #finish this
     def add_points_to_skeleton(self, **kwargs):
@@ -602,8 +610,9 @@ class SkeletonModel:
         self.samples_per_segment = samples_per_segment
         
         #all important points in a dictionary or list
-        
 
+        self.skeleton = skeleton
+        
         self.inlet_arteries = {
             "BA": [(-4.5, 0, -5), (-4, 0, -4), (-4, 0, -3), (-4, 0, -2), (-4.5, 0, -1), (-5, 0, 0)],
             "RICA": [(2, -4, -4.5), (4, -4, -4), (5.5, -4, -3), (5, -4, -1.5), (3.5, -4, -1),
@@ -611,8 +620,6 @@ class SkeletonModel:
             "LICA": [(2, 4, -4.5), (4, 4, -4), (5.5, 4, -3), (5, 4, -1.5), (3.5, 4, -1),
                     (2, 4, 0), (2, 3.5, 1.5), (3, 3, 2.5)],
         }
-
-        self.skeleton = skeleton
 
         self.outlet_arteries = {
             "RPCA": [(-5, 0, 0), (-5, -1, 0.5), (-5, -2, 0.5), (-5, -3, 0), (-5, -4, 0),
@@ -639,16 +646,18 @@ class SkeletonModel:
         
         self.all_arteries = {**self.outlet_arteries, **self.inlet_arteries, **self.communicating_arteries}
         
-        self.anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
+        '''self.anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
                                   (1, 3.5, 0.5), (4, -2, 3.5), (4, 2, 3.5), 
                                   (3.5, 4, 3.5), (3.5, -4, 3.5), (-4, 3.5, 0), 
-                                  (-4, -3.5, 0), (7, -1, 9.5), (7, 1, 9.5), (-4.5, 0, -5)])
+                                  (-4, -3.5, 0), (7, -1, 9.5), (7, 1, 9.5), (-4.5, 0, -5)])'''
         
-        '''self.anchor_points = np.array([[-5, -1, 0.5], [-5, 1, 0.5], [1, -3.5, 0.5], 
+        self.anchor_points = np.array([[-5, -1, 0.5], [-5, 1, 0.5], [1, -3.5, 0.5], 
                                   [1, 3.5, 0.5], [4, -2, 3.5], [4, 2, 3.5], 
                                   [3.5, 4, 3.5], [3.5, -4, 3.5], [-4, 3.5, 0], 
-                                  [-4, -3.5, 0]])'''
+                                  [-4, -3.5, 0]])
         
+        #self.anchor_point = np.array([-5, -1, 0.5], [-5, 1, 0.5])
+
         self.filter_non_present_arteries()
         #dictionary of points for all arteries
         self.points = self.compute_all_points()
@@ -656,13 +665,13 @@ class SkeletonModel:
         self.points_list = [point for sublist in self.points.values() for point in sublist]
         self.compute_all_tangents()
 
+        #fill anchor_points in as point objects
         anchor_points = [0 for i in range(self.anchor_points.shape[0])]
         for point in self.points_list:
             if point.anchor_point == True:
                 coords = np.array(point.coords)
                 idx = np.where(np.all(np.isclose(self.anchor_points, coords), axis=1))[0][0]
                 anchor_points[idx] = point
-
 
         self.anchor_points = np.array(anchor_points)[np.flatnonzero(np.array(anchor_points))]
 
@@ -806,14 +815,14 @@ class SkeletonModel:
                 point.update_tangent(tan)
         
     def compute_all_splines(self):
-        for artery in self.points:
+        for artery in self.points.keys():
             self._splines[artery] = self.compute_spline(artery)
         # one additional pass so children capture fresh parent tangents
         for artery in self.points:
             self._splines[artery] = self.compute_spline(artery)
               
     def compute_spline(self, artery): 
-        pts = self.points[artery]  
+        pts = self.points[artery]
         pt_coords = np.array([point.coords for point in self.points[artery]])
         start_tan = pts[0].tangent
         end_tan = pts[-1].tangent
@@ -833,7 +842,7 @@ class SkeletonModel:
     def find_linear_transform(self):
 
         #find skeleton anchor points
-        skeleton_anchor_points = self.skeleton.anchor_points
+        skeleton_anchor_points = self.skeleton.target_points
 
         model_anchor_points = np.array([point.coords for point in self.anchor_points])
 
@@ -853,6 +862,136 @@ class SkeletonModel:
 
         return similarity_matrix, affine_matrix
 
+    def apply_linear_transform(self, transform):
+        Point.transform_all_instances(transform)
+        self.compute_all_splines()
+
+    def move_anchor_points(self):
+        targets = self.skeleton.target_points
+        for idx, anchor_point in enumerate(self.anchor_points):
+            anchor_point.update_point(targets[idx])
+
+        self.compute_all_tangents()
+        self.compute_all_splines()
+
+    def move_non_anchor_points(self, artery):
+        points_of_interest = [point for point in self.points[artery] if point.find_highest_hierarchy_artery() == artery]
+        coordinates = np.array([point.coords for point in points_of_interest]) 
+
+        vessel_labels = {
+            "BA": 1.0,
+            "LPCA": 2.0,
+            "RPCA": 3.0,
+            "LICA": 4.0,
+            "LMCA": 5.0,
+            "RICA": 6.0,
+            "RMCA": 7.0,
+            "LPCOM": 8.0,
+            "RPCOM": 9.0,
+            "ACOM": 10.0,
+            "LACA": 11.0,
+            "RACA": 12.0,
+        }
+
+        artery_mask = (self.skeleton.point_data['Artery'] == vessel_labels[artery])
+        artery_idxs = np.where(artery_mask > 0)
+        artery_points = self.skeleton.points[artery_idxs]
+        
+        already_matched = []
+
+        for point in points_of_interest:
+            distances = cdist([point.coords], artery_points, metric="euclidean").flatten()
+            closest = np.argsort(distances)[0]
+            count = 1
+            while closest in already_matched:
+                closest = np.argsort(distances)[count]
+                count += 1
+            already_matched.append(closest)
+            point.update_point(artery_points[closest])
+            
+
+        coordinates = np.array([point.coords for point in points_of_interest]) 
+
+        distances = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(coordinates, axis=0), axis=1))])
+        t = distances / distances[-1]
+
+        fx = interp1d(t, coordinates[:, 0], kind='linear')
+        fy = interp1d(t, coordinates[:, 1], kind='linear')
+        fz = interp1d(t, coordinates[:, 2], kind='linear')
+        
+        t_new = np.linspace(0, 1, len(points_of_interest))
+        new_coords = np.column_stack([fx(t_new), fy(t_new), fz(t_new)])
+
+        for point, coords in zip(points_of_interest, new_coords):
+            point.update_point(coords)
+
+        already_matched = []
+        for point in points_of_interest:
+            distances = cdist([point.coords], artery_points, metric="euclidean").flatten()
+            closest = np.argsort(distances)[0]
+            count = 1
+            while closest in already_matched:
+                closest = np.argsort(distances)[count]
+                count += 1
+            already_matched.append(closest)
+            point.update_point(artery_points[closest])
+        
+
+        self.compute_all_tangents()
+        self.compute_all_splines()
+
+    def move_all_non_anchor_points(self):
+        for artery in self.all_arteries.keys():
+            self.move_non_anchor_points(artery)
+        
+    def plot(self, plot_skeleton=False, add_line_between_target_anchor=False, plot_tangents=False):
+        plotter = pv.Plotter()
+        for poly in self.all_splines().values():
+            plotter.add_mesh(poly, line_width=6, render_lines_as_tubes=True)
+        
+        if plot_skeleton:
+            plotter.add_mesh(self.skeleton.points, render_points_as_spheres=True, color='light_gray', point_size=8)
+            plotter.add_mesh(self.skeleton.target_points, render_points_as_spheres=True, color='green', point_size=12)
+
+        if add_line_between_target_anchor and plot_skeleton:
+            targets = self.skeleton.target_points
+            anchors = np.array([point.coords for point in self.anchor_points])
+            for i in range(anchors.shape[0]):
+                line = pv.Line(targets[i], anchors[i])
+                plotter.add_mesh(line, color='blue', line_width=2)
+
+        non_anchor_point_cloud = np.vstack([point.coords for point in self.points_list if point.anchor_point == False])
+        anchor_point_cloud = np.vstack([point.coords for point in self.points_list if point.anchor_point])
+
+        if plot_tangents:
+            for point in self.points_list:
+                line = pv.Line((point.tangent * 0.5 + point.coords), point.coords)
+                plotter.add_mesh(line, color='purple', line_width=2)
+
+        #plotter.add_mesh(np.array((-4.5, 0, -5)), render_points_as_spheres=True, color='black', point_size=12)
+        plotter.add_mesh(non_anchor_point_cloud, render_points_as_spheres=True, color='red', point_size=10)
+        plotter.add_mesh(anchor_point_cloud, render_points_as_spheres=True, color='yellow', point_size=12)
+        plotter.camera_position = 'xy'
+        plotter.show()
+
+    def get_spline(self, artery: str) -> pv.PolyData:
+        return self._splines[artery]
+
+    def all_splines(self) -> Dict[str, pv.PolyData]:
+        return self._splines
+    
+    def apply_non_linear_transform(self, transform):
+        
+        transformed_points = []
+        for point in self.points_list:
+            coords = point.coords
+            sitk_point = [float(coords[0]), float(coords[1]), float(coords[2])]
+            transformed_point = np.array(transform.TransformPoint(sitk_point))
+            point.update_point(transformed_point)
+        
+        self.compute_all_tangents()
+        self.compute_all_splines()
+
     def find_non_linear_transform(self,
                                        skeleton: Skeleton,
                                        image_size=[256, 256, 128], 
@@ -867,7 +1006,7 @@ class SkeletonModel:
         )
         
         source = [point.coords for point in self.anchor_points]
-        fixed = skeleton.anchor_points
+        fixed = skeleton.target_points
 
         def objective_function(params):
             # Set transform parameters
@@ -908,69 +1047,6 @@ class SkeletonModel:
         print(f"Optimization completed. Final error: {result.fun}")
         
         return bspline_transform
-
-    def apply_non_linear_transform(self, transform):
-        
-        transformed_points = []
-        for point in self.points_list:
-            coords = point.coords
-            sitk_point = [float(coords[0]), float(coords[1]), float(coords[2])]
-            transformed_point = np.array(transform.TransformPoint(sitk_point))
-            point.update_point(transformed_point)
-        
-        self.compute_all_tangents()
-        self.compute_all_splines()
-
-    def plot(self, plot_skeleton=False):
-        plotter = pv.Plotter()
-        for poly in self.all_splines().values():
-            plotter.add_mesh(poly, line_width=6, render_lines_as_tubes=True)
-        
-        if plot_skeleton:
-            plotter.add_mesh(self.skeleton.points, render_points_as_spheres=True, color='black', point_size=8)
-
-        point_cloud = np.vstack([point.coords for point in self.points_list])
-        
-        #plotter.add_mesh(np.array((-4.5, 0, -5)), render_points_as_spheres=True, color='black', point_size=12)
-        plotter.add_mesh(point_cloud, render_points_as_spheres=True, color='red', point_size=10)
-        plotter.camera_position = 'xy'
-        plotter.show()
-
-    def apply_linear_transform(self, transform):
-        Point.transform_all_instances(transform)
-        self.compute_all_splines()
-
-    def move_knot(self, artery: str, index: int, new_xyz: Tuple[float, float, float]) -> Set[str]:
-        """Move one explicit control point and recompute affected splines.
-
-        Returns
-        -------
-        set[str]
-            Artery names that were recomputed.
-        """
-        if artery not in self.points:
-            raise KeyError(f"Unknown artery '{artery}'.")
-        pts = self.points[artery]
-        if not (0 <= index < len(pts)):
-            raise IndexError("knot index out of range")
-
-        pts[index].update_point(np.asarray(new_xyz, float))
-
-        # arteries influenced by either old or new position
-        affected = pts[index].arteries
-
-        self.compute_tangents(affected)
-
-        for artery in affected:
-            self._splines[artery] = self.compute_spline(artery)
-
-        return affected
-
-    def get_spline(self, artery: str) -> pv.PolyData:
-        return self._splines[artery]
-
-    def all_splines(self) -> Dict[str, pv.PolyData]:
-        return self._splines
 
 class Point:
     all_points = []
@@ -1082,7 +1158,7 @@ def catmull_rom_spline_polydata(
         m[0] = _normalize(start_tangent) * np.linalg.norm(m[0])
     if (not closed) and end_tangent is not None:
         m[-1] = _normalize(end_tangent) * np.linalg.norm(m[-1])
-
+    
     # -- create coordinate‑wise Hermite splines ------------------------------
     xs = CubicHermiteSpline(t, points[:, 0], m[:, 0])
     ys = CubicHermiteSpline(t, points[:, 1], m[:, 1])
