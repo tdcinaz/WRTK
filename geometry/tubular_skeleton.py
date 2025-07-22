@@ -133,7 +133,7 @@ class Skeleton(pv.PolyData):
         self.point_data['Radius'] = self.radii_mm.flatten()
         self.point_data["Artery"] = self.labels.flatten()
         self.point_data['ConnectionLabel'] = self.connection_labels
-        self.point_data['Bifurcation'] = self.bifurcation_labels
+        #self.point_data['Bifurcation'] = self.bifurcation_labels
         self.find_target_points()
         
     def _compute_points(self):
@@ -173,7 +173,7 @@ class Skeleton(pv.PolyData):
         self.radii_mm = self.radii_mm[np.sort(idx)]
         self.labels = self.labels[np.sort(idx)]
         self.connection_labels = self._extract_connections(points=unique_points, artery_labels=self.labels)
-        self.bifurcation_labels, unique_points = self.find_bifurcations(points=unique_points)
+        #self.bifurcation_labels, unique_points = self.find_bifurcations(points=unique_points)
 
         return unique_points
 
@@ -188,9 +188,9 @@ class Skeleton(pv.PolyData):
         skeleton_connection_labels = np.nonzero(self.point_data['ConnectionLabel'])
         connection_points = self.points[skeleton_connection_labels]
         p.add_mesh(connection_points, color='purple', render_points_as_spheres=True, point_size=10)
-        skeleton_bifurcation_labels = np.nonzero(self.point_data['Bifurcation'])
+        '''skeleton_bifurcation_labels = np.nonzero(self.point_data['Bifurcation'])
         bifurcation_points = self.points[skeleton_bifurcation_labels]
-        p.add_mesh(bifurcation_points, color='yellow', render_points_as_spheres=True, point_size=10)
+        p.add_mesh(bifurcation_points, color='yellow', render_points_as_spheres=True, point_size=10)'''
 
         p.show()
 
@@ -263,9 +263,10 @@ class Skeleton(pv.PolyData):
         new_skeleton.point_data['Radius'] = filtered_radius
         new_skeleton.point_data['Artery'] = filtered_artery
         #might be kind of expensive to just remove two points
-        new_skeleton._extract_connections()
+        connection_labels = new_skeleton._extract_connections(filtered_artery, filtered_points)
+        new_skeleton.point_data['ConnectionLabel'] = connection_labels
         new_skeleton.find_target_points()
-        new_skeleton.find_bifurcations()
+        #new_skeleton.find_bifurcations()
         
         return new_skeleton
 
@@ -321,8 +322,7 @@ class Skeleton(pv.PolyData):
         filtered_points = self.points[keep_ids]
         filtered_radius = self.point_data['Radius'][keep_ids]
         filtered_artery = self.point_data['Artery'][keep_ids]
-        filtered_connection = self.point_data['ConnectionLabel'][keep_ids]
-        filtered_bifurcation = self.point_data['Bifurcation'][keep_ids]
+        #filtered_bifurcation = self.point_data['Bifurcation'][keep_ids]
         
         # Create a completely new Skeleton object
         # We bypass the normal __init__ to avoid recomputing from image
@@ -335,8 +335,9 @@ class Skeleton(pv.PolyData):
         new_skeleton.image = self.image
         new_skeleton.point_data['Radius'] = filtered_radius
         new_skeleton.point_data['Artery'] = filtered_artery
-        new_skeleton.point_data['ConnectionLabel'] = filtered_connection
-        new_skeleton.point_data['Bifurcation'] = filtered_bifurcation
+        connection_labels = new_skeleton._extract_connections(filtered_artery, filtered_points)
+        new_skeleton.point_data['ConnectionLabel'] = connection_labels
+        #new_skeleton.point_data['Bifurcation'] = filtered_bifurcation
         new_skeleton.find_target_points()
         
         return new_skeleton
@@ -387,8 +388,9 @@ class Skeleton(pv.PolyData):
                 dists, nearest = tree_b.query(pts_a)  # nearest neighbour in label_b for each point in label_a
 
                 best = np.argmin(dists)               # index in pts_a of the overall closest pair
-                end_points.append(int(idx_a[best]))
-                end_points.append(int(idx_b[nearest[best]]))
+                if dists[best] < 1.5:
+                    end_points.append(int(idx_a[best]))
+                    end_points.append(int(idx_b[nearest[best]]))
 
         skeleton_points = points
         skeleton_labels = np.zeros(skeleton_points.shape[0])
@@ -499,13 +501,13 @@ class Skeleton(pv.PolyData):
         self.connection_labels = np.append(self.connection_labels, np.zeros(new_points.shape[0] - points.shape[0]))
         return bifurcation_point_data, new_points
 
-    #flexible to different patients with different COWs but doesn't work all the time
     def find_target_points(self):
 
         #only works for "typical COWs"
         connections = self.point_data['ConnectionLabel']
-        idxs = np.where(connections > 0)
         
+        idxs = np.where(connections > 0)
+
         points = self.points[idxs]
         labels = self.point_data["Artery"][idxs]
         distance_matrix = cdist(points, points)
@@ -532,15 +534,22 @@ class Skeleton(pv.PolyData):
                  "R-ACA/R-ICA", "L-ACA/L-ICA", "L-MCA/L-ICA", "R-MCA/R-ICA", 
                  "L-Pcom/L-PCA", "R-Pcom/R-PCA"]
         
-        bifurcation_order = ["Basillar/PCAs", "L-PCA/L-Pcom", "R-PCA/R-Pcom", 
-                            "L-ICA/L-Pcom", "R-ICA/R-Pcom", "L-MCA/L-ICA", "R-MCA/R-ICA"]
-        
-        patient_specific_vessel_labels = {key:value for key, value in vessel_labels.items() if key in present_arteries}
-        patient_specific_order = [connection for connection in order if all(item in patient_specific_vessel_labels.values() for item in connection.split("/"))]
-        patient_specific_bifurcation_order = [connection for connection in bifurcation_order if all(item in patient_specific_vessel_labels.values() for item in connection.split("/"))]
-        
-        bifurcation_points = [0 for _ in range(len(patient_specific_bifurcation_order))]
+        present_connections = []
 
+        patient_specific_vessel_labels = {key:value for key, value in vessel_labels.items() if key in present_arteries}
+        
+        for idx in range(len(points)):
+            nearest = np.argsort(distance_matrix[idx])[1]
+            nearest_point = points[nearest]
+            current_point = points[idx]
+            nearest_point_label = labels[nearest]
+            current_point_label = labels[idx]
+            connection = f"{patient_specific_vessel_labels[nearest_point_label]}/{patient_specific_vessel_labels[current_point_label]}"
+            if connection in order:
+                present_connections.append(connection)
+        
+        patient_specific_order = [connection for connection in order if all(item in patient_specific_vessel_labels.values() for item in connection.split("/")) and connection in present_connections]
+        
         self.target_points = [0 for _ in range(len(patient_specific_order))]
 
         for idx in range(len(points)):
@@ -550,7 +559,6 @@ class Skeleton(pv.PolyData):
             nearest_point_label = labels[nearest]
             current_point_label = labels[idx]
             connection = f"{patient_specific_vessel_labels[nearest_point_label]}/{patient_specific_vessel_labels[current_point_label]}"
-
             if connection in patient_specific_order:
                 insertion_index = patient_specific_order.index(connection)
                 new_point = (nearest_point + current_point) / 2
@@ -558,8 +566,6 @@ class Skeleton(pv.PolyData):
             else:
                 continue
         
-        for anchor_point in self.target_points:
-            continue
 
         Bas_points = self.points[np.where(self.point_data['Artery'] == 1)]
         LACA_points = self.points[np.where(self.point_data['Artery'] == 11)]
@@ -573,6 +579,9 @@ class Skeleton(pv.PolyData):
         #self.target_points.append(min_bas)
         #anchor points are in order of the order list followed by the top RACA point, top LACA point, and bottom basillar point
         self.target_points = np.array(self.target_points)
+        self.order = order
+        self.patient_specific_connections = present_connections
+
     
     #finish this
     def add_points_to_skeleton(self, **kwargs):
@@ -646,18 +655,11 @@ class SkeletonModel:
         
         self.all_arteries = {**self.outlet_arteries, **self.inlet_arteries, **self.communicating_arteries}
         
-        '''self.anchor_points = np.array([(-5, -1, 0.5), (-5, 1, 0.5), (1, -3.5, 0.5), 
-                                  (1, 3.5, 0.5), (4, -2, 3.5), (4, 2, 3.5), 
-                                  (3.5, 4, 3.5), (3.5, -4, 3.5), (-4, 3.5, 0), 
-                                  (-4, -3.5, 0), (7, -1, 9.5), (7, 1, 9.5), (-4.5, 0, -5)])'''
-        
         self.anchor_points = np.array([[-5, -1, 0.5], [-5, 1, 0.5], [1, -3.5, 0.5], 
                                   [1, 3.5, 0.5], [4, -2, 3.5], [4, 2, 3.5], 
                                   [3.5, 4, 3.5], [3.5, -4, 3.5], [-4, 3.5, 0], 
                                   [-4, -3.5, 0]])
         
-        #self.anchor_point = np.array([-5, -1, 0.5], [-5, 1, 0.5])
-
         self.filter_non_present_arteries()
         #dictionary of points for all arteries
         self.points = self.compute_all_points()
@@ -673,7 +675,17 @@ class SkeletonModel:
                 idx = np.where(np.all(np.isclose(self.anchor_points, coords), axis=1))[0][0]
                 anchor_points[idx] = point
 
-        self.anchor_points = np.array(anchor_points)[np.flatnonzero(np.array(anchor_points))]
+        for idx, [point, connection] in enumerate(zip(anchor_points, skeleton.order)):
+            if point == 0 or connection not in skeleton.patient_specific_connections:
+                anchor_points.pop(idx)
+                try:
+                    point.anchor_point = False
+                except:
+                    None
+            else:
+                point.update_anchor_point_connection(connection)
+
+        self.anchor_points = np.array(anchor_points)
 
         # spline cache {artery → PolyData}
         self._splines: Dict[str, pv.PolyData] = {}
@@ -1115,6 +1127,9 @@ class Point:
 
     def is_start_or_end_point(self):
         return
+
+    def update_anchor_point_connection(self, connection):
+        self.anchor_point_connection = connection
 
 def _normalize(vec: np.ndarray) -> np.ndarray:
     """Return *vec* normalised (safe if ‖vec‖ ≈ 0)."""
