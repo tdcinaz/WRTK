@@ -7,25 +7,29 @@ input = "training/labelsTr/topcow_307.nii.gz"
 pv_image = Image(input)
 
 skeleton = pv_image.create_skeleton()
-skeleton = skeleton.filter_artery_by_radius([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], 0.325)
-
+skeleton = skeleton.filter_artery_by_radius([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+skeleton.find_field(2, sample_resolution=0.5)
 #skeleton.plot()
 
-template = SkeletonModel(skeleton)
+#template = SkeletonModel(skeleton)
+#similarity, affine = template.find_linear_transform()
+#template.apply_linear_transform(similarity)
+#template.move_all_non_anchor_points()
+#template.move_anchor_points()
+#template.optimize_move(1)
 #template.plot()
-similarity, affine = template.find_linear_transform()
-template.apply_linear_transform(similarity)
+
+
 #template.apply_linear_transform(affine)
+'''
 
 
-template.move_all_non_anchor_points()
-template.move_anchor_points()
 
 #for i in range(10):
 #    transform = template.find_non_linear_transform(skeleton)
 #    template.apply_non_linear_transform(transform)
 
-template.plot(plot_skeleton=True, plot_tangents=False)
+template.plot(plot_skeleton=True, plot_tangents=False)'''
 
 
 '''ideas:
@@ -33,6 +37,4 @@ template.plot(plot_skeleton=True, plot_tangents=False)
 '''
 
 '''problems:
-1. bad geometry still persists after opening
-2. opening is sometimes too aggressive
-3. anchor points doesn't work on all scans still'''
+1. scan 304 connections'''

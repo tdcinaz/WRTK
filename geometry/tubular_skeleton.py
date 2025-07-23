@@ -270,7 +270,7 @@ class Skeleton(pv.PolyData):
         
         return new_skeleton
 
-    def filter_artery_by_radius(self, arteries_to_remove: list, radius_min: float, atol: float = 1e-6):
+    def filter_artery_by_radius(self, arteries_to_remove: list, atol: float = 1e-6):
         """
         Return a copy of *mesh* with points from a given artery removed if their
         ``Radius`` value is below ``radius_min``.
@@ -306,12 +306,19 @@ class Skeleton(pv.PolyData):
 
         keep_mask = np.ones(len(arteries), dtype=bool)
 
+
+
         for artery_to_remove in arteries_to_remove:
             
             #only keep labels where the artery isn't a target artery and where the radius is smaller than the minimum radius
             #keep where NOT (NOT target artery AND radius is smaller than minimum radius)
-            keep_mask &= ~(~(np.abs(arteries - artery_to_remove) > atol) & (radii < radius_min))
-
+            artery_mask = np.ones(len(arteries), dtype=bool)
+            artery_mask &= ~(~(np.abs(arteries - artery_to_remove) > atol))
+            artery_ids = np.where(artery_mask)[0]
+            std_dev = np.std(radii[artery_ids])
+            rad_mean = np.mean(radii[artery_ids])
+            threshold = rad_mean - 2 * std_dev
+            keep_mask &= ~(~(np.abs(arteries - artery_to_remove) > atol) & (radii < threshold))
 
         keep_ids = np.where(keep_mask)[0]
 
@@ -567,12 +574,12 @@ class Skeleton(pv.PolyData):
                 continue
         
 
-        Bas_points = self.points[np.where(self.point_data['Artery'] == 1)]
-        LACA_points = self.points[np.where(self.point_data['Artery'] == 11)]
-        RACA_points = self.points[np.where(self.point_data['Artery'] == 12)]
-        min_bas = Bas_points[np.argmin(Bas_points[:, 2])]
-        max_LACA = LACA_points[np.argmax(LACA_points[:, 2])]
-        max_RACA = RACA_points[np.argmax(RACA_points[:, 2])]
+        #Bas_points = self.points[np.where(self.point_data['Artery'] == 1)]
+        #LACA_points = self.points[np.where(self.point_data['Artery'] == 11)]
+        #RACA_points = self.points[np.where(self.point_data['Artery'] == 12)]
+        #min_bas = Bas_points[np.argmin(Bas_points[:, 2])]
+        #max_LACA = LACA_points[np.argmax(LACA_points[:, 2])]
+        #max_RACA = RACA_points[np.argmax(RACA_points[:, 2])]
 
         #self.target_points.append(max_RACA)
         #self.target_points.append(max_LACA)
@@ -582,7 +589,61 @@ class Skeleton(pv.PolyData):
         self.order = order
         self.patient_specific_connections = present_connections
 
-    
+    def find_field(self, artery, sample_resolution=0.5):
+        keep_ids = np.where((artery == self.point_data['Artery']))[0]
+        artery_points = self.points[keep_ids]
+        artery_radii = self.point_data['Artery'][keep_ids]
+        centroid = np.mean(artery_points, axis=0)
+        
+        xs = artery_points[:, 0]
+        ys = artery_points[:, 1]
+        zs = artery_points[:, 2]
+        
+        dev_x = np.std(xs)
+        dev_y = np.std(ys)
+        dev_z = np.std(zs)
+
+        k = 3
+        min_x, max_x = np.floor((centroid[0] - k * dev_x) / sample_resolution) * sample_resolution, np.floor((centroid[0] + k * dev_x) / sample_resolution) * sample_resolution
+        min_y, max_y = np.floor((centroid[1] - k * dev_y) / sample_resolution) * sample_resolution, np.floor((centroid[1] + k * dev_y) / sample_resolution) * sample_resolution
+        min_z, max_z = np.floor((centroid[2] - k * dev_z) / sample_resolution) * sample_resolution, np.floor((centroid[2] + k * dev_z) / sample_resolution) * sample_resolution
+
+        x = np.arange(min_x, max_x, sample_resolution)
+        y = np.arange(min_y, max_y, sample_resolution)
+        z = np.arange(min_z, max_z, sample_resolution)
+
+        X, Y, Z = np.meshgrid(x, y, z, indexing='ij')
+        grid = np.stack((X, Y, Z), axis=-1)
+
+        points = grid.reshape(-1, 3)
+
+        alpha=0.5
+        epsilon=0.1
+        gamma = 2
+        field = np.zeros(points.shape[0])
+
+        for point, radius in zip(artery_points, artery_radii):
+            distances = np.linalg.norm(points - point, axis=1)
+            field += (radius ** gamma) / (distances**(alpha) + epsilon)
+        
+        field = 1 / field
+
+        point_cloud = pv.PolyData(points)
+        min_weight, max_weight = np.min(field), np.max(field)
+        weights = (1.0 - (field - min_weight) / (max_weight - min_weight))
+        point_cloud['weights'] = weights
+        plotter = pv.Plotter()
+
+        plotter.add_mesh(point_cloud, scalars='weights', opacity=(weights**2), cmap='coolwarm')
+        plotter.add_scalar_bar(title="weight_vals", n_labels=5, italic=False, fmt='%.1f')
+
+        plotter.add_mesh(self.points, color='black')
+
+        plotter.show()
+
+        field_grid = field.reshape([grid.shape[0], grid.shape[1], grid.shape[2]])
+        return field_grid, grid, field, points
+
     #finish this
     def add_points_to_skeleton(self, **kwargs):
         parameters = ["new_points", "new_connection", "new_radius", "new_artery", "new_bifurcation"]
@@ -666,26 +727,7 @@ class SkeletonModel:
         #list of all points
         self.points_list = [point for sublist in self.points.values() for point in sublist]
         self.compute_all_tangents()
-
-        #fill anchor_points in as point objects
-        anchor_points = [0 for i in range(self.anchor_points.shape[0])]
-        for point in self.points_list:
-            if point.anchor_point == True:
-                coords = np.array(point.coords)
-                idx = np.where(np.all(np.isclose(self.anchor_points, coords), axis=1))[0][0]
-                anchor_points[idx] = point
-
-        for idx, [point, connection] in enumerate(zip(anchor_points, skeleton.order)):
-            if point == 0 or connection not in skeleton.patient_specific_connections:
-                anchor_points.pop(idx)
-                try:
-                    point.anchor_point = False
-                except:
-                    None
-            else:
-                point.update_anchor_point_connection(connection)
-
-        self.anchor_points = np.array(anchor_points)
+        self.anchor_points = self.compute_anchor_points()
 
         # spline cache {artery → PolyData}
         self._splines: Dict[str, pv.PolyData] = {}
@@ -777,6 +819,29 @@ class SkeletonModel:
                         continue
 
         return all_arteries
+
+    def compute_anchor_points(self):
+        #fill anchor_points in as point objects
+        anchor_points = [0 for i in range(self.anchor_points.shape[0])]
+        for point in self.points_list:
+            if point.anchor_point == True:
+                coords = np.array(point.coords)
+                idx = np.where(np.all(np.isclose(self.anchor_points, coords), axis=1))[0][0]
+                anchor_points[idx] = point
+
+        keep_idxs = []
+        for idx, [point, connection] in enumerate(zip(anchor_points, self.skeleton.order)):
+            if point == 0 or connection not in self.skeleton.patient_specific_connections:
+                try:
+                    point.anchor_point = False
+                except:
+                    None
+            else:
+                point.update_anchor_point_connection(connection)
+                keep_idxs.append(idx)
+        
+        final = np.array(anchor_points)[np.array(keep_idxs)]
+        return final
 
     def compute_all_tangents(self):
         #make a list with desired order that tangents are computed in
@@ -914,6 +979,8 @@ class SkeletonModel:
         for point in points_of_interest:
             distances = cdist([point.coords], artery_points, metric="euclidean").flatten()
             closest = np.argsort(distances)[0]
+            #print(np.argsort(distances))
+            #print(artery)
             count = 1
             while closest in already_matched:
                 closest = np.argsort(distances)[count]
@@ -955,7 +1022,43 @@ class SkeletonModel:
     def move_all_non_anchor_points(self):
         for artery in self.all_arteries.keys():
             self.move_non_anchor_points(artery)
+
+    def optimize_move(self, artery, iterations=1):
+        field_grid, grid, field, field_points = self.skeleton.find_field(1)
+        artery_idxs = np.where(artery == self.skeleton.point_data['Artery'])[0]
+        artery_points = self.skeleton.points[artery_idxs]
+
+        #print(field_points)
+        #print(field)
         
+        spline = self.get_spline("BA")
+        points = spline.points
+
+        new_points = np.empty(points.shape)
+        already_picked_points = []
+        for point in points:
+            distances_to_skeleton = cdist([point], artery_points, metric="euclidean").flatten()
+            closest_skeleton_point = artery_points[np.argsort(distances_to_skeleton)[0]]
+            count = 0
+            while np.any(np.all(closest_skeleton_point == already_picked_points)):
+                closest_skeleton_point = artery_points[np.argsort(distances_to_skeleton)[count]]
+                count += 1
+            already_picked_points.append(closest_skeleton_point)
+            distances_to_field = cdist([closest_skeleton_point], field_points, metric="euclidean").flatten()
+            closest_field_point = field_points[np.argsort(distances_to_field)[0]]
+
+            indices = np.where(np.all(grid == closest_field_point, axis=-1))
+            
+            x = indices[0][0]
+            y = indices[1][0]
+            z = indices[2][0]
+
+            local_field_points = grid[x-5:x+5, y-5:y+5, z-5:z+5]
+            local_field = field_grid[x-5:x+5, y-5:y+5, z-5:z+5]
+
+            max_idx = np.unravel_index(np.argmax(local_field), local_field.shape)
+            print(max_idx)
+
     def plot(self, plot_skeleton=False, add_line_between_target_anchor=False, plot_tangents=False):
         plotter = pv.Plotter()
         for poly in self.all_splines().values():
