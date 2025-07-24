@@ -15,6 +15,7 @@ from scipy.optimize import minimize
 import networkx as nx
 import random
 import matplotlib.pyplot as plt
+import math
 
 __all__ = [
     "SkeletonModel",
@@ -1128,6 +1129,11 @@ class SkeletonModel:
 
         self.compute_all_tangents
         self.compute_all_splines
+
+        def logger(self, step, cur_score, best_score, T):
+            """Pass this as the `callback` argument."""
+            self.steps.append(step)
+            self.scores.append(cur_score)
 
     def optimize_move(self, artery_label, iterations=1, plot=False):
         field_grid, grid, field, field_points = self.fields[artery_label]
