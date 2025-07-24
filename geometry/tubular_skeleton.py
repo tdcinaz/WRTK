@@ -14,6 +14,7 @@ import SimpleITK as sitk
 from scipy.optimize import minimize
 import networkx as nx
 import random
+import matplotlib.pyplot as plt
 
 __all__ = [
     "SkeletonModel",
@@ -1062,6 +1063,71 @@ class SkeletonModel:
         print(f"{artery}:\nField sum: {field_sum}\nStd dev: {std_dev}\nDot score: {dot_score}")        
 
         return field_sum + dot_score + std_dev
+    
+    def simulated_annealing(
+        self,
+        artery,
+        initial_temp: float = 1.0,
+        final_temp: float   = 1e-3,
+        alpha: float        = 0.9,
+        iters_per_temp: int = 50,
+        perturb_scale: float = 0.1,
+        seed: Optional[int] = 1337,
+    ):
+        """
+        Returns (best_points, best_score).
+
+        callback(i, current_score, best_score, T) is invoked every 100 iterations
+        if provided, so you can live‑log or plot the search.
+        """
+        rng = random.Random(seed)
+
+        # keep deep copies so the originals are untouched
+        best_pts     = np.array([point for point in self.points[artery]]).copy()
+        current_pts  = np.array([point for point in self.points[artery]]).copy()
+        best_score   = current_score = self.loss_function(artery)
+
+        T, step = initial_temp, 0
+
+        self.steps, self.scores = [], []
+
+        while T > final_temp:
+            for _ in range(iters_per_temp):
+                step += 1
+                # --- propose a neighbour ----------------------------------------
+                trial_pts = current_pts.copy()
+                idx       = rng.randrange(len(trial_pts))   # which point?
+                axis      = rng.randrange(3)                # 0=x, 1=y, 2=z
+                delta     = rng.uniform(-perturb_scale, perturb_scale) * T
+                trial_pts[idx].coords[axis] += delta
+                self.points[artery] = trial_pts.astype(list)
+
+                trial_score = self.loss_function(artery)
+                delta_E     = trial_score - current_score
+
+                # --- Metropolis criterion ---------------------------------------
+                if delta_E < 0 or rng.random() < math.exp(-delta_E / T):
+                    current_pts, current_score = trial_pts, trial_score
+                    if trial_score < best_score:            # new global best!
+                        best_pts, best_score = trial_pts.copy(), trial_score
+                    print("Trial Score:", trial_score, "    Best Score:", best_score, "T:", T)
+                
+                self.logger(step, current_score, best_score, T)
+
+            T *= alpha                                     # cool down
+        self.points[artery] = best_pts.astype(list)
+
+        plt.figure()
+        plt.plot(self.steps, self.scores, lw=1)
+        plt.xlabel("Iteration")
+        plt.ylabel("Current score")
+        plt.title("Simulated‑annealing progress")
+        plt.grid(True, linestyle="--", alpha=0.4)
+        plt.tight_layout()
+        plt.show()
+
+        self.compute_all_tangents
+        self.compute_all_splines
 
     def optimize_move(self, artery_label, iterations=1, plot=False):
         field_grid, grid, field, field_points = self.fields[artery_label]

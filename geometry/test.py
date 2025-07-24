@@ -16,9 +16,11 @@ template = SkeletonModel(skeleton)
 #template.apply_linear_transform(similarity)
 template.move_all_non_anchor_points()
 template.move_anchor_points()
-for artery in np.unique(skeleton.point_data['Artery']):
-    template.optimize_move(artery)
-    template.loss_function(artery)
+#for artery in np.unique(skeleton.point_data['Artery']):
+#    template.optimize_move(artery)
+#    template.loss_function(artery)
+template.simulated_annealing(3)
+
 
 template.plot(plot_skeleton=False, plot_tangents=True)
 
