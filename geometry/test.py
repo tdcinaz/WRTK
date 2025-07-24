@@ -18,10 +18,9 @@ template.move_all_non_anchor_points()
 template.move_anchor_points()
 for artery in np.unique(skeleton.point_data['Artery']):
     template.optimize_move(artery)
-    print("Artery", int(artery))
     template.loss_function(artery)
 
-template.plot(plot_skeleton=True)
+template.plot(plot_skeleton=False, plot_tangents=True)
 
 
 #template.apply_linear_transform(affine)

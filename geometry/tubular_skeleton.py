@@ -13,7 +13,7 @@ from skimage import transform
 import SimpleITK as sitk
 from scipy.optimize import minimize
 import networkx as nx
-
+import random
 
 __all__ = [
     "SkeletonModel",
@@ -706,7 +706,6 @@ class SkeletonModel:
         
         self.all_arteries = {**self.outlet_arteries, **self.inlet_arteries, **self.communicating_arteries}
     
-
         self.anchor_points = np.array([[39.0, 19.0, 27.0], [39.0, 19.0, 33.0], [36.0, 29.0, 19.5], [36.0, 29.0, 40.5], [44.5, 31.0, 13.5], [44.5, 31.0, 46.5], [44.0, 31.0, 51.0], [44.0, 31.0, 9.0], [38.0, 21.5, 40.0], [38.0, 21.5, 20.0]])
         
         self.filter_non_present_arteries()
@@ -1005,19 +1004,29 @@ class SkeletonModel:
             self.move_non_anchor_points(artery)
 
     def loss_function(self, artery):
+        
+        def signed_log_normalize(dot_products, base=np.e):
+            signs = np.sign(dot_products)
+            abs_values = np.abs(dot_products)
+
+            epsilon=1e-8
+            log_abs = np.log(abs_values + epsilon) / np.log(base)
+
+            return signs * log_abs
+        
         #field
         field_grid, grid, field, field_points = self.fields[artery]
         tree = cKDTree(np.array([point.coords for point in self.points[artery]]))
         hits = tree.query_ball_point(field_points, 2.5)
         in_any_sphere = np.fromiter((len(lst) > 0 for lst in hits), bool)
-
+        points = np.array([point.coords for point in self.points[artery]])
         scalars = field[in_any_sphere]
 
-        field_sum = float(scalars.sum())
+        artery_points = self.skeleton.points[np.where(artery == self.skeleton.point_data['Artery'])[0]]
 
-        print(field_sum)
+        field_sum = ((float(scalars.sum()) / (np.sum(field))) * (points.shape[0] / artery_points.shape[0])) * 10
         
-        points = np.array([point.coords for point in self.points[artery]])
+
         spheres = [pv.Sphere(radius=2.5, center=p) for p in points]
         combined = pv.MultiBlock(spheres).combine()   # unioned surface
 
@@ -1025,27 +1034,34 @@ class SkeletonModel:
         captured_mask = pv.pyvista_ndarray(in_any_sphere)  # reuse mask above
         captured = field_points[in_any_sphere]
 
-        plotter = pv.Plotter()
-        plotter.add_mesh(self.skeleton)
-        plotter.add_mesh(combined, color="blue", opacity=0.15)
-        plotter.add_mesh(captured, color="red", point_size=6,
-                        render_points_as_spheres=True)
-        plotter.show()
-        #z, y, x = np.ogrid[:shape[0], :shape[1], :shape[2]]
+        #plotter = pv.Plotter()
+        #plotter.add_mesh(self.skeleton)
+        #plotter.add_mesh(combined, color="blue", opacity=0.15)
+        #plotter.add_mesh(captured, color="red", point_size=6,
+        #                render_points_as_spheres=True)
+        #plotter.show()
 
-        # Calculate distance from center for each point
-        #distance = np.sqrt((x - center[2])**2 + (y - center[1])**2 + (z - center[0])**2)
-        
-        # Create sphere: 1s where distance <= radius, 0s elsewhere
-        #sphere = (distance <= radius).astype(int)
-
-        #anchor point-connection proximity
-        
-        #minimize negative dot products
-        
-        #spacing
         #std dev
-        return
+        #spacing
+        artery_points = [point.coords for point in self.points[artery]]
+        distances = [np.linalg.norm(artery_points[idx] - artery_points[idx+1]) for idx in range(len(artery_points) - 1)]
+        std_dev = np.std(distances)
+
+        #minimize negative dot products
+        connection_points = [1 if point.artery_type == "connection" else 0 for point in self.points[artery]]
+        tangents = [point.tangent for point in self.points[artery]]
+        #find dot_products
+        dot_products = np.array([np.dot(tangents[idx], tangents[idx+1]) for idx in range(len(artery_points) - 1) if (connection_points[idx] == 0 and connection_points[idx+1] == 0)])
+        #anchor point-connection proximity
+        normalized_dots = signed_log_normalize(dot_products)
+        
+        alpha = 1
+        epsilon = np.e
+
+        dot_score = np.sum(alpha * (epsilon ** (-1 * normalized_dots))) / len(dot_products)
+        print(f"{artery}:\nField sum: {field_sum}\nStd dev: {std_dev}\nDot score: {dot_score}")        
+
+        return field_sum + dot_score + std_dev
 
     def optimize_move(self, artery_label, iterations=1, plot=False):
         field_grid, grid, field, field_points = self.fields[artery_label]
@@ -1145,9 +1161,6 @@ class SkeletonModel:
 
     def get_spline(self, artery: str) -> pv.PolyData:
         return self._splines[artery]
-
-
-
 
     def all_splines(self) -> Dict[str, pv.PolyData]:
         return self._splines
