@@ -1006,9 +1006,33 @@ class SkeletonModel:
 
     def loss_function(self, artery):
         #field
+        field_grid, grid, field, field_points = self.fields[artery]
+        tree = cKDTree(np.array([point.coords for point in self.points[artery]]))
+        hits = tree.query_ball_point(field_points, 2.5)
+        in_any_sphere = np.fromiter((len(lst) > 0 for lst in hits), bool)
 
-        #z, y, x = np.ogrid[:shape[0], :shape[1], :shape[2]]
+        scalars = field[in_any_sphere]
+
+        field_sum = float(scalars.sum())
+
+        print(field_sum)
         
+        points = np.array([point.coords for point in self.points[artery]])
+        spheres = [pv.Sphere(radius=2.5, center=p) for p in points]
+        combined = pv.MultiBlock(spheres).combine()   # unioned surface
+
+        # Flag captured field points
+        captured_mask = pv.pyvista_ndarray(in_any_sphere)  # reuse mask above
+        captured = field_points[in_any_sphere]
+
+        plotter = pv.Plotter()
+        plotter.add_mesh(self.skeleton)
+        plotter.add_mesh(combined, color="blue", opacity=0.15)
+        plotter.add_mesh(captured, color="red", point_size=6,
+                        render_points_as_spheres=True)
+        plotter.show()
+        #z, y, x = np.ogrid[:shape[0], :shape[1], :shape[2]]
+
         # Calculate distance from center for each point
         #distance = np.sqrt((x - center[2])**2 + (y - center[1])**2 + (z - center[0])**2)
         
@@ -1320,8 +1344,8 @@ def catmull_rom_spline_polydata(
     alpha = 0.5
     _, idx = np.unique(points, return_index=True, axis=0)
     unique_points = points[np.sort(idx)]
-    if len(unique_points) < len(points):
-        print("duplicate points found")
+    #if len(unique_points) < len(points):
+        #print("duplicate points found")
     t = np.zeros(len(unique_points))
     for i in range(1, len(t)):
         t[i] = t[i - 1] + np.linalg.norm(unique_points[i] - unique_points[i - 1]) ** alpha
