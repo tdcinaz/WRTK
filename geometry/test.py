@@ -8,28 +8,26 @@ pv_image = Image(input)
 
 skeleton = pv_image.create_skeleton()
 skeleton = skeleton.filter_artery_by_radius([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
-#skeleton.find_field(2, sample_resolution=0.5)
-#skeleton.plot()
+potential = skeleton.find_field_at_point(1, np.array((9, 19, 30)))
 
-template = SkeletonModel(skeleton)
+
+#template = SkeletonModel(skeleton)
 #similarity, affine = template.find_linear_transform()
 #template.apply_linear_transform(similarity)
-template.move_all_non_anchor_points()
-template.move_anchor_points()
+#template.move_all_non_anchor_points()
+#template.move_anchor_points()
 #for artery in np.unique(skeleton.point_data['Artery']):
 #    template.optimize_move(artery)
 #    template.loss_function(artery)
-template.simulated_annealing(3)
+#template.simulated_annealing(5)
 
 
-template.plot(plot_skeleton=False, plot_tangents=True)
+#template.plot(plot_skeleton=True, plot_tangents=True)
 
 
 #template.apply_linear_transform(affine)
+
 '''
-
-
-
 #for i in range(10):
 #    transform = template.find_non_linear_transform(skeleton)
 #    template.apply_non_linear_transform(transform)
