@@ -21,17 +21,28 @@ template.move_anchor_points()
 #for artery in np.unique(skeleton.point_data['Artery']):
 #    template.optimize_move(artery)
 
-start_time = time.process_time()
-for artery in np.unique(skeleton.point_data['Artery']):
-    sum = template.cost(artery)
-    print(sum)
-end_time = time.process_time()
+#start_time = time.process_time()
+#for artery in np.unique(skeleton.point_data['Artery']):
+#    sum = template.cost(artery)
+#    print(sum)
+#end_time = time.process_time()
 
-print("CPU time:", end_time - start_time)
+#print("CPU time:", end_time - start_time)
+
+def logger(it, U, g):
+    print(f"iter {it:4d}   U={U: .6e}   |∇U|={g:.3e}")
+
+template.optimise(artery=1,
+             lr=0.02,
+             max_iters=2,
+             beta_mom=None,      # momentum; set None for plain GD
+             callback=logger)
+
 #template.simulated_annealing(5)
+template.compute_all_tangents()
+template.compute_all_splines()
 
-
-#template.plot(plot_skeleton=True, plot_tangents=True)
+template.plot(plot_skeleton=True, plot_tangents=False)
 
 
 #template.apply_linear_transform(affine)
