@@ -629,15 +629,6 @@ class Skeleton(pv.PolyData):
         
         print(f"Potential: {potential}")
         print(f"Field: {field}")
-        
-        #plotter = pv.Plotter()
-        #plotter.add_mesh(self.points)
-        #pc = pv.PolyData(coords)
-        #pc['vecs'] = field
-        #glyphs = pc.glyph(orient='vecs', scale=False)
-
-        #plotter.add_mesh(glyphs, color='black')
-        #plotter.show()
 
         return potential, field
 
@@ -1067,22 +1058,74 @@ class SkeletonModel:
             self.move_non_anchor_points(artery)
 
     def cost(self, artery):
-        knot_points = np.array([point.coords for point in self.points[artery]])
+        knot_pos = np.array([p.coords for p in self.points[artery]])
+        phi, _   = self.net_phi_E(artery, knot_pos)        # ← vectorised
+        return phi.sum()         # or whatever scalar you need
 
-        potentials = [self.skeleton.find_potential_at_point(artery, knot_point)[0] for knot_point in knot_points]
-        alpha = 1
-        beta = 1
+    def net_phi_E(self, artery, coords: np.ndarray):
+        """Potential & field at an arbitrary point.
 
-        for idx, knot_point in enumerate(knot_points):
-            r_vectors = coords - artery_points
-            dists = np.linalg.norm(knot_point, knot_points, axis=1)
-            
-            potentials[idx] += np.sum((alpha * beta) / dists)
+        coords : (3,) or (M,3)
+        """
+        # Make coords at least 2‑D for broadcasting
+        eval_pts = np.atleast_2d(coords)
 
-        print(potentials)
-        cost = np.sum(potentials)
-        return cost
+        # ---------- fixed negative charges ----------
+        #neg_pos = self.skeleton.points[artery]   # (N₋,3)
+        #neg_q   = -np.ones(len(neg_pos)) * q0                        # all –q₀
+        q0 = 1.0
 
+        keep_ids = np.where((artery == self.skeleton.point_data['Artery']))[0]
+        neg_pos = self.skeleton.points[keep_ids]
+        neg_q = -self.skeleton.point_data['Artery'][keep_ids]
+
+        # ---------- mobile positive charges ----------
+        pos_pos = np.array([p.coords for p in self.points[artery]])  # (N₊,3)
+        pos_q   =  np.ones(len(pos_pos)) * q0                        # all +q₀
+
+        # Combine sources
+        src_pos = np.vstack((neg_pos, pos_pos))
+        src_q   = np.concatenate((neg_q, pos_q))
+
+        phi, E = _phi_E_from_sources(eval_pts, src_pos, src_q, k=1.0)
+        return phi.squeeze(), E.squeeze()
+
+    def forces_on_positives(self, artery):
+        """
+        Return array (N₊,3) of net forces on every positive particle.
+        """
+        pos_pos = np.array([p.coords for p in self.points[artery]])  # (N₊,3)
+        Np      = len(pos_pos)
+        q0 = 1.0
+        pos_q   = np.full(Np, q0)    # same +q0 or supply your own array
+
+        # ----‑ A) contributions from all negative charges ----‑
+        #neg_pos = self.points[self.skeleton.point_data['Artery'] == artery]   # (N₋,3)
+        #neg_q   = -np.ones(len(neg_pos)) * q0
+
+        keep_ids = np.where((artery == self.skeleton.point_data['Artery']))[0]
+        neg_pos = self.skeleton.points[keep_ids]
+        neg_q = -self.skeleton.point_data['Artery'][keep_ids]
+
+        _, E_neg = _phi_E_from_sources(pos_pos, neg_pos, neg_q)
+
+        # ----‑ B) mutual positive–positive interactions ----‑
+        # pair‑wise differences
+        r_ij = pos_pos[:, None, :] - pos_pos[None, :, :]     # (N₊,N₊,3)
+        d_ij = np.linalg.norm(r_ij, axis=-1)
+        mask = ~np.eye(Np, dtype=bool)                      # exclude self
+        inv_d3 = np.zeros_like(d_ij)
+        inv_d3[mask] = (1.0 / d_ij[mask])**3
+
+        k = 1.0
+
+        # Σ_{j≠i} k q_j r_ij / r³
+        E_pp = k * (pos_q[None, :, None] * r_ij * inv_d3[..., None]).sum(axis=1)
+
+        # ----‑ total field and force on each positive charge ----‑
+        E_tot = E_neg + E_pp
+        F     = pos_q[:, None] * E_tot
+        return F
 
     def optimize_move(self, artery_label, iterations=1, plot=False):
         field_grid, grid, field, field_points = self.fields[artery_label]
@@ -1422,4 +1465,42 @@ def catmull_rom_spline_polydata(
 # -----------------------------------------------------------------------------
 #   Skeleton model – dynamic & efficient recomputation
 # -----------------------------------------------------------------------------
+
+def _phi_E_from_sources(eval_pts: np.ndarray,
+                        src_pos: np.ndarray,
+                        src_q:   np.ndarray,
+                        k: float = 1.0):
+    """
+    Vectorised Coulomb sum.
+
+    Parameters
+    ----------
+    eval_pts : (M, 3)  points where you want φ and E
+    src_pos  : (N, 3)  positions of the charges
+    src_q    : (N,)    charge magnitudes (signed)
+    k        : float   Coulomb constant 1/(4πϵ₀).  Use k=8.987e9 if you
+                       want SI units; k=1.0 keeps everything unit‑less.
+
+    Returns
+    -------
+    φ  : (M,)   potential at each evaluation point
+    E  : (M,3)  electric field vector at each evaluation point
+    """
+    #  r_ij  = r_eval_i  –  r_src_j  → shape (M, N, 3)
+    r_ij = eval_pts[:, None, :] - src_pos[None, :, :]
+    d_ij = np.linalg.norm(r_ij, axis=-1)           # (M, N)
+
+    # Avoid divide‑by‑zero (self interactions later)
+    mask = d_ij > 0.0
+    inv_d = np.zeros_like(d_ij)
+    inv_d[mask] = 1.0 / d_ij[mask]
+
+    # φ_i = Σ_j k q_j / r_ij
+    phi = k * (src_q * inv_d).sum(axis=1)          # (M,)
+
+    # E_i = Σ_j k q_j r̂_ij / r_ij²  = Σ_j k q_j r_ij / r_ij³
+    inv_d3           = np.zeros_like(d_ij)
+    inv_d3[mask]     = inv_d[mask]**3
+    E = k * (src_q[None, :, None] * r_ij * inv_d3[..., None]).sum(axis=1)
+    return phi, E
 

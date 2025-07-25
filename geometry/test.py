@@ -1,6 +1,8 @@
 from tubular_skeleton import Image, Skeleton, SkeletonModel
 import numpy as np
 
+import time
+
 
 input = "training/labelsTr/topcow_307.nii.gz"
 
@@ -19,8 +21,13 @@ template.move_anchor_points()
 #for artery in np.unique(skeleton.point_data['Artery']):
 #    template.optimize_move(artery)
 
-template.cost(1)
+start_time = time.process_time()
+for artery in np.unique(skeleton.point_data['Artery']):
+    sum = template.cost(artery)
+    print(sum)
+end_time = time.process_time()
 
+print("CPU time:", end_time - start_time)
 #template.simulated_annealing(5)
 
 
