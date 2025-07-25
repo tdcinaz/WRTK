@@ -596,16 +596,50 @@ class Skeleton(pv.PolyData):
         artery_points = self.points[keep_ids]
         artery_radii = -self.point_data['Artery'][keep_ids]
         
-        #constant term
+        # Constant term
         alpha = 1
-        #charge = artery radius (weight)
         
-        #distance
-        dists = np.linalg.norm(coords - artery_points, axis=1)
-        #sum kq/r for all artery points
+        # Calculate vectors from each artery point to the evaluation point
+        r_vectors = coords - artery_points  # Shape: (n_points, 3)
+        
+        # Calculate distances
+        dists = np.linalg.norm(r_vectors, axis=1)  # Shape: (n_points,)
+        valid_mask = dists > 0
+        dists = dists[valid_mask]
+        r_vectors = r_vectors[valid_mask]
+        artery_radii = artery_radii[valid_mask]
+        
+        # Calculate potential (scalar): sum of alpha * q / r
         potential = np.sum((alpha * artery_radii) / dists)
-        print(potential)
-        return potential
+        
+        # Calculate electric field (vector): sum of alpha * q * r_hat / r²
+        # r_hat = r_vectors / dists (unit vectors)
+        # Field contribution from each point: alpha * q * r_hat / r²
+        
+        # Expand dimensions for broadcasting
+        dists_expanded = dists[:, np.newaxis]  # Shape: (n_points, 1)
+        artery_radii_expanded = artery_radii[:, np.newaxis]  # Shape: (n_points, 1)
+        
+        # Calculate field contributions from each point
+        field_contributions = (alpha * artery_radii_expanded * r_vectors) / (dists_expanded**3)
+        
+        # Sum to get total field vector
+        field = np.sum(field_contributions, axis=0)  # Shape: (3,)
+        field = field.reshape(1, 3)
+        
+        print(f"Potential: {potential}")
+        print(f"Field: {field}")
+        
+        #plotter = pv.Plotter()
+        #plotter.add_mesh(self.points)
+        #pc = pv.PolyData(coords)
+        #pc['vecs'] = field
+        #glyphs = pc.glyph(orient='vecs', scale=False)
+
+        #plotter.add_mesh(glyphs, color='black')
+        #plotter.show()
+
+        return potential, field
 
     def find_field(self, artery, sample_resolution=0.5, plot=False):
         keep_ids = np.where((artery == self.point_data['Artery']))[0]
@@ -649,9 +683,6 @@ class Skeleton(pv.PolyData):
 
         field_grid = np.array(np.gradient(potential_grid))
         field = field_grid.reshape(-1, 3)
-        
-        print(potential.shape)
-        print(field.shape)
 
         if plot:
             plotter = pv.Plotter()
@@ -1035,133 +1066,23 @@ class SkeletonModel:
         for artery in self.all_arteries.keys():
             self.move_non_anchor_points(artery)
 
-    def loss_function(self, artery):
-        
-        def signed_log_normalize(dot_products, base=np.e):
-            signs = np.sign(dot_products)
-            abs_values = np.abs(dot_products)
+    def cost(self, artery):
+        knot_points = np.array([point.coords for point in self.points[artery]])
 
-            epsilon=1e-8
-            log_abs = np.log(abs_values + epsilon) / np.log(base)
-
-            return signs * log_abs
-        
-        #field
-        field_grid, grid, field, field_points = self.fields[artery]
-        tree = cKDTree(np.array([point.coords for point in self.points[artery]]))
-        hits = tree.query_ball_point(field_points, 2.5)
-        in_any_sphere = np.fromiter((len(lst) > 0 for lst in hits), bool)
-        points = np.array([point.coords for point in self.points[artery]])
-        scalars = field[in_any_sphere]
-
-        artery_points = self.skeleton.points[np.where(artery == self.skeleton.point_data['Artery'])[0]]
-
-        field_sum = ((float(scalars.sum()) / (np.sum(field))) * (points.shape[0] / artery_points.shape[0])) * 10
-        
-
-        spheres = [pv.Sphere(radius=2.5, center=p) for p in points]
-        combined = pv.MultiBlock(spheres).combine()   # unioned surface
-
-        # Flag captured field points
-        captured_mask = pv.pyvista_ndarray(in_any_sphere)  # reuse mask above
-        captured = field_points[in_any_sphere]
-
-        #plotter = pv.Plotter()
-        #plotter.add_mesh(self.skeleton)
-        #plotter.add_mesh(combined, color="blue", opacity=0.15)
-        #plotter.add_mesh(captured, color="red", point_size=6,
-        #                render_points_as_spheres=True)
-        #plotter.show()
-
-        #std dev
-        #spacing
-        artery_points = [point.coords for point in self.points[artery]]
-        distances = [np.linalg.norm(artery_points[idx] - artery_points[idx+1]) for idx in range(len(artery_points) - 1)]
-        std_dev = np.std(distances)
-
-        #minimize negative dot products
-        connection_points = [1 if point.artery_type == "connection" else 0 for point in self.points[artery]]
-        tangents = [point.tangent for point in self.points[artery]]
-        #find dot_products
-        dot_products = np.array([np.dot(tangents[idx], tangents[idx+1]) for idx in range(len(artery_points) - 1) if (connection_points[idx] == 0 and connection_points[idx+1] == 0)])
-        #anchor point-connection proximity
-        normalized_dots = signed_log_normalize(dot_products)
-        
+        potentials = [self.skeleton.find_potential_at_point(artery, knot_point)[0] for knot_point in knot_points]
         alpha = 1
-        epsilon = np.e
+        beta = 1
 
-        dot_score = np.sum(alpha * (epsilon ** (-1 * normalized_dots))) / len(dot_products)
-        print(f"{artery}:\nField sum: {field_sum}\nStd dev: {std_dev}\nDot score: {dot_score}")        
+        for idx, knot_point in enumerate(knot_points):
+            r_vectors = coords - artery_points
+            dists = np.linalg.norm(knot_point, knot_points, axis=1)
+            
+            potentials[idx] += np.sum((alpha * beta) / dists)
 
-        return field_sum + dot_score + std_dev
-    
-    def simulated_annealing(
-        self,
-        artery,
-        initial_temp: float = 1.0,
-        final_temp: float   = 1e-3,
-        alpha: float        = 0.9,
-        iters_per_temp: int = 25,
-        perturb_scale: float = 0.75,
-        seed: Optional[int] = 1337,
-    ):
-        """
-        Returns (best_points, best_score).
+        print(potentials)
+        cost = np.sum(potentials)
+        return cost
 
-        callback(i, current_score, best_score, T) is invoked every 100 iterations
-        if provided, so you can live‑log or plot the search.
-        """
-        rng = random.Random(seed)
-
-        # keep deep copies so the originals are untouched
-        best_pts     = np.array([point for point in self.points[artery]]).copy()
-        current_pts  = np.array([point for point in self.points[artery]]).copy()
-        best_score   = current_score = self.loss_function(artery)
-
-        T, step = initial_temp, 0
-
-        self.steps, self.scores = [], []
-        while T > final_temp:
-            for _ in range(iters_per_temp):
-                step += 1
-                # --- propose a neighbour ----------------------------------------
-                trial_pts = current_pts.copy()
-                idx       = rng.randrange(len(trial_pts))   # which point?
-                axis      = rng.randrange(3)                # 0=x, 1=y, 2=z
-                delta     = rng.uniform(-perturb_scale, perturb_scale) * T
-                trial_pts[idx].coords[axis] += delta
-                self.points[artery] = trial_pts.astype(list)
-                self.compute_all_tangents()
-                trial_score = self.loss_function(artery)
-                delta_E     = trial_score - current_score
-
-                # --- Metropolis criterion ---------------------------------------
-                if delta_E < 0 or rng.random() < math.exp(-delta_E / T):
-                    current_pts, current_score = trial_pts, trial_score
-                    if trial_score < best_score:            # new global best!
-                        best_pts, best_score = trial_pts.copy(), trial_score
-                    print("Trial Score:", trial_score, "    Best Score:", best_score, "T:", T)
-                
-                self.logger(step, current_score, best_score, T)
-
-            T *= alpha                                     # cool down
-        #self.points[artery] = best_pts.astype(list)
-
-        plt.figure()
-        plt.plot(self.steps, self.scores, lw=1)
-        plt.xlabel("Iteration")
-        plt.ylabel("Current score")
-        plt.title("Simulated‑annealing progress")
-        plt.grid(True, linestyle="--", alpha=0.4)
-        plt.tight_layout()
-        plt.show()
-
-        self.compute_all_splines()
-
-    def logger(self, step, cur_score, best_score, T):
-        """Pass this as the `callback` argument."""
-        self.steps.append(step)
-        self.scores.append(cur_score)
 
     def optimize_move(self, artery_label, iterations=1, plot=False):
         field_grid, grid, field, field_points = self.fields[artery_label]
