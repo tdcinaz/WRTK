@@ -591,6 +591,22 @@ class Skeleton(pv.PolyData):
         self.order = order
         self.patient_specific_connections = present_connections
 
+    def find_potential_at_point(self, artery, coords: np.ndarray):
+        keep_ids = np.where((artery == self.point_data['Artery']))[0]
+        artery_points = self.points[keep_ids]
+        artery_radii = -self.point_data['Artery'][keep_ids]
+        
+        #constant term
+        alpha = 1
+        #charge = artery radius (weight)
+        
+        #distance
+        dists = np.linalg.norm(coords - artery_points, axis=1)
+        #sum kq/r for all artery points
+        potential = np.sum((alpha * artery_radii) / dists)
+        print(potential)
+        return potential
+
     def find_field(self, artery, sample_resolution=0.5, plot=False):
         keep_ids = np.where((artery == self.point_data['Artery']))[0]
         artery_points = self.points[keep_ids]
@@ -622,31 +638,45 @@ class Skeleton(pv.PolyData):
         alpha=0.5
         epsilon=0.1
         gamma = 2
-        field = np.zeros(points.shape[0])
+        potential = np.zeros(points.shape[0])
 
         for point, radius in zip(artery_points, artery_radii):
             distances = np.linalg.norm(points - point, axis=1)
-            field += (radius ** gamma) / (distances**(alpha) + epsilon)
+            potential += (radius ** gamma) / (distances**(alpha) + epsilon)
 
-        field = 1 / field
+        #potential = 1 / potential
+        potential_grid = potential.reshape([grid.shape[0], grid.shape[1], grid.shape[2]])
 
-
+        field_grid = np.array(np.gradient(potential_grid))
+        field = field_grid.reshape(-1, 3)
         
+        print(potential.shape)
+        print(field.shape)
+
         if plot:
-            point_cloud = pv.PolyData(points)
-            min_weight, max_weight = np.min(field), np.max(field)
-            weights = (1.0 - (field - min_weight) / (max_weight - min_weight))
-            point_cloud['weights'] = weights
             plotter = pv.Plotter()
-            plotter.add_mesh(point_cloud, scalars='weights', opacity=(weights**2), cmap='coolwarm')
+            count=0
+            for field_vec, point in zip(field, points):
+                print(field_vec)
+                print(point)
+                line = pv.Line((point + field_vec * 0.00), point)
+                plotter.add_mesh(line, color='purple', line_width=2)
+                count += 1
+            
+            point_cloud = pv.PolyData(points)
+            min_weight, max_weight = np.min(potential), np.max(potential)
+            weights = (1.0 - (potential - min_weight) / (max_weight - min_weight))
+            point_cloud['weights'] = weights
+
+            plotter.add_mesh(point_cloud, scalars='weights', opacity=(weights**2), cmap='coolwarm', render_points_as_spheres=True, point_size=10)
             plotter.add_scalar_bar(title="weight_vals", n_labels=5, italic=False, fmt='%.1f')
 
             plotter.add_mesh(self.points, color='black')
 
             plotter.show()
 
-        field_grid = field.reshape([grid.shape[0], grid.shape[1], grid.shape[2]])
-        return field_grid, grid, field, points
+        field_grid = potential.reshape([grid.shape[0], grid.shape[1], grid.shape[2]])
+        return field_grid, grid, potential, points
 
     #finish this
     def add_points_to_skeleton(self, **kwargs):
@@ -1071,8 +1101,8 @@ class SkeletonModel:
         initial_temp: float = 1.0,
         final_temp: float   = 1e-3,
         alpha: float        = 0.9,
-        iters_per_temp: int = 50,
-        perturb_scale: float = 0.1,
+        iters_per_temp: int = 25,
+        perturb_scale: float = 0.75,
         seed: Optional[int] = 1337,
     ):
         """
@@ -1091,7 +1121,6 @@ class SkeletonModel:
         T, step = initial_temp, 0
 
         self.steps, self.scores = [], []
-
         while T > final_temp:
             for _ in range(iters_per_temp):
                 step += 1
@@ -1102,7 +1131,7 @@ class SkeletonModel:
                 delta     = rng.uniform(-perturb_scale, perturb_scale) * T
                 trial_pts[idx].coords[axis] += delta
                 self.points[artery] = trial_pts.astype(list)
-
+                self.compute_all_tangents()
                 trial_score = self.loss_function(artery)
                 delta_E     = trial_score - current_score
 
@@ -1116,7 +1145,7 @@ class SkeletonModel:
                 self.logger(step, current_score, best_score, T)
 
             T *= alpha                                     # cool down
-        self.points[artery] = best_pts.astype(list)
+        #self.points[artery] = best_pts.astype(list)
 
         plt.figure()
         plt.plot(self.steps, self.scores, lw=1)
@@ -1127,13 +1156,12 @@ class SkeletonModel:
         plt.tight_layout()
         plt.show()
 
-        self.compute_all_tangents
-        self.compute_all_splines
+        self.compute_all_splines()
 
-        def logger(self, step, cur_score, best_score, T):
-            """Pass this as the `callback` argument."""
-            self.steps.append(step)
-            self.scores.append(cur_score)
+    def logger(self, step, cur_score, best_score, T):
+        """Pass this as the `callback` argument."""
+        self.steps.append(step)
+        self.scores.append(cur_score)
 
     def optimize_move(self, artery_label, iterations=1, plot=False):
         field_grid, grid, field, field_points = self.fields[artery_label]
