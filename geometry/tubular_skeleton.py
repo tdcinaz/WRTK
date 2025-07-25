@@ -16,6 +16,8 @@ import networkx as nx
 import random
 import matplotlib.pyplot as plt
 import math
+import torch 
+
 
 __all__ = [
     "SkeletonModel",
@@ -1077,7 +1079,7 @@ class SkeletonModel:
 
         keep_ids = np.where((artery == self.skeleton.point_data['Artery']))[0]
         neg_pos = self.skeleton.points[keep_ids]
-        neg_q = -self.skeleton.point_data['Artery'][keep_ids]
+        neg_q = -self.skeleton.point_data['Radius'][keep_ids]
 
         # ---------- mobile positive charges ----------
         pos_pos = np.array([p.coords for p in self.points[artery]])  # (N₊,3)
@@ -1469,7 +1471,8 @@ def catmull_rom_spline_polydata(
 def _phi_E_from_sources(eval_pts: np.ndarray,
                         src_pos: np.ndarray,
                         src_q:   np.ndarray,
-                        k: float = 1.0):
+                        k: float = 1.0,
+                        plot: bool = False):
     """
     Vectorised Coulomb sum.
 
@@ -1501,6 +1504,32 @@ def _phi_E_from_sources(eval_pts: np.ndarray,
     # E_i = Σ_j k q_j r̂_ij / r_ij²  = Σ_j k q_j r_ij / r_ij³
     inv_d3           = np.zeros_like(d_ij)
     inv_d3[mask]     = inv_d[mask]**3
-    E = k * (src_q[None, :, None] * r_ij * inv_d3[..., None]).sum(axis=1)
-    return phi, E
+    E = - k * (src_q[None, :, None] * r_ij * inv_d3[..., None]).sum(axis=1)
+    E_unit = E.copy()
+    max_mag = np.max(np.linalg.norm(E, axis=1))
+    min_mag = np.min(np.linalg.norm(E, axis=1))
+
+    for idx, vec in enumerate(E):
+        norm = np.linalg.norm(vec)
+        new_mag = (norm - min_mag) / (max_mag - min_mag)
+        unit_vec = vec / norm
+        E_unit[idx] = unit_vec
+    
+
+    
+    if plot:
+        plotter = pv.Plotter()
+        weights = 1 - (phi - np.min(phi)) / (np.max(phi) - np.min(phi))
+        point_cloud = pv.PolyData(eval_pts)
+        #point_cloud['weights'] = phi
+        #plotter.add_mesh(point_cloud, scalars="weights", render_points_as_spheres=True, point_size=5, cmap='coolwarm', opacity=weights)
+        point_cloud['vec'] = E_unit
+        new_glyphs = point_cloud.glyph(orient='vec', scale=True)
+
+        plotter.add_mesh(new_glyphs)
+        #plotter.add_mesh(skeleton.points, color='black', render_points_as_spheres=True, point_size=5)
+
+        plotter.show()
+
+    return phi, E_unit
 
