@@ -1471,7 +1471,6 @@ def catmull_rom_spline_polydata(
 def _phi_E_from_sources(eval_pts: np.ndarray,
                         src_pos: np.ndarray,
                         src_q:   np.ndarray,
-                        skeleton, 
                         k: float = 1.0,
                         plot: bool = False):
     """
@@ -1524,11 +1523,11 @@ def _phi_E_from_sources(eval_pts: np.ndarray,
         point_cloud = pv.PolyData(eval_pts)
         #point_cloud['weights'] = phi
         #plotter.add_mesh(point_cloud, scalars="weights", render_points_as_spheres=True, point_size=5, cmap='coolwarm', opacity=weights)
-        point_cloud['vec'] = E_norm
+        point_cloud['vec'] = E_unit
         new_glyphs = point_cloud.glyph(orient='vec', scale=True)
 
         plotter.add_mesh(new_glyphs)
-        plotter.add_mesh(skeleton.points, color='black', render_points_as_spheres=True, point_size=5)
+        #plotter.add_mesh(skeleton.points, color='black', render_points_as_spheres=True, point_size=5)
 
         plotter.show()
 
